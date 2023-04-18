@@ -1,2 +1,3 @@
 *.py    filter=python
 *.pt    annex.largefiles=true
+*.html    annex.largefiles=true
