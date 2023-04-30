@@ -9,6 +9,8 @@
 *.user
 *.userosscache
 *.sln.docstates
+*.png
+*.jpg
 
 *.html
 

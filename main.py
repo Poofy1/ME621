@@ -1,5 +1,4 @@
-import os
-import json
+import os, json
 import telegram
 import aiohttp
 import asyncio
@@ -7,15 +6,11 @@ from urllib.request import FancyURLopener
 import torch
 from io import BytesIO
 from PIL import Image
-import torchvision.transforms as transforms
-import torchvision.models as models
-import torch.nn as nn
 import warnings
+from train import *
 
 # Initialize 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-env = os.path.dirname(os.path.abspath(__file__))
 bot : telegram.Bot
 
 class MyOpener(FancyURLopener):
@@ -23,9 +18,8 @@ class MyOpener(FancyURLopener):
 myopener = MyOpener()
 
 
-model_name = "main8"
-image_size = 224
-threshold = 0.75
+me621_model_name = "main9"
+me621_threshold = 0.75
 
 
 def load_last_image_id():
@@ -33,25 +27,6 @@ def load_last_image_id():
         with open(f"{env}/last_image_id.txt", "r") as file:
             return int(file.read().strip())
     return None
-
-# Define transform for the test images
-test_transform = transforms.Compose([
-    transforms.Resize((image_size, image_size)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-])
-
-
-class MyModel(nn.Module):
-    def __init__(self, num_classes=2):
-        super(MyModel, self).__init__()
-        self.efficientnet = models.efficientnet_b0(pretrained=True)
-        num_ftrs = self.efficientnet.classifier[-1].in_features
-        self.efficientnet.classifier[-1] = nn.Linear(num_ftrs, num_classes)
-
-    def forward(self, x):
-        x = self.efficientnet(x)
-        return x
 
 async def scrape_new_images():
     print("Finding new images")
@@ -94,7 +69,7 @@ async def scrape_new_images():
 
 async def download_images_sequentially(image_data):
     # Load Model
-    model = torch.load(f"{env}/models/{model_name}.pt").to(device)
+    model = torch.load(f"{env}/models/{me621_model_name}.pt").to(device)
     model.eval()
 
     async with aiohttp.ClientSession() as session:
@@ -110,12 +85,11 @@ async def download_images_sequentially(image_data):
     
     
 
-
 async def Evaluate(model, image, image_id):
     # Classify test images
     try:
         image_input = image.convert("RGB")
-        test_image_tensor = test_transform(image_input).unsqueeze(0).to(device)
+        test_image_tensor = val_transform(image_input).unsqueeze(0).to(device)
         with torch.no_grad():
             output = model(test_image_tensor)
         probabilities = torch.softmax(output, dim=1)
@@ -124,7 +98,7 @@ async def Evaluate(model, image, image_id):
         print(f"Failed test")
         return
 
-    if predicted_prob >= threshold:
+    if predicted_prob >= me621_threshold:
         print(f"Image {image_id} Passed: {predicted_prob:.3f}")
 
         image_bytes = BytesIO()
