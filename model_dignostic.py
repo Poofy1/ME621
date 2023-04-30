@@ -4,6 +4,7 @@ import plotly.offline as pyo
 import pandas as pd
 import shutil
 from PIL import Image
+import tqdm
 import numpy as np
 import warnings
 from tqdm import tqdm as tqdm_loop
@@ -31,6 +32,16 @@ def postprocess_image(image_tensor):
     return img
 
 
+
+def remove_bad_images(image_path):
+    for image in tqdm(os.listdir(image_path)):
+        try:
+            with open(f"{image_path}{image}", 'rb') as f:
+                img = Image.open(f)
+                #img.convert('RGB')
+        except:
+            print(f"Removing image: {image}")
+            os.remove(f"{image_path}/{image}")
 
 def image_test(model_name, input_dir, move_images, threshold):
     model = torch.load(f"{env}/models/{model_name}.pt")

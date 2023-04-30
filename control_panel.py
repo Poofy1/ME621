@@ -10,6 +10,9 @@ continue_training = False
 batch_size = 32
 num_epochs = 5
 
+#Debug
+dataset_validation = False
+
 #Feature Analysis
 mass_image_test = True
 feature_analysis = False
@@ -26,7 +29,10 @@ if __name__ == '__main__':
         train_model(model_name, continue_training, batch_size, num_epochs)
     
     
-        
+
+    if dataset_validation:
+        remove_bad_images("D:/DATA/E621/sorted/0/")
+        remove_bad_images("D:/DATA/E621/sorted/1/")
 
     if mass_image_test:
         image_test(model_name, "D:/DATA/E621/sorted/0/", True, 0.75)
