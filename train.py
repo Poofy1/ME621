@@ -74,13 +74,13 @@ class SquareResize:
 
 # Define transforms for data augmentation
 transform = transforms.Compose([
-    SquareResize(image_size),
     transforms.RandomRotation(degrees=90),
-    transforms.RandomResizedCrop(size=image_size, scale=(0.9, 1.3)),
-    transforms.RandomPerspective(distortion_scale=0.3),
-    transforms.GaussianBlur(kernel_size=3, sigma=(0.0001, 0.3)),
+    transforms.RandomResizedCrop(size=image_size, scale=(0.95, 1.5)),
+    transforms.RandomPerspective(distortion_scale=0.5),
+    #transforms.GaussianBlur(kernel_size=3, sigma=(0.0001, 0.3)),
     transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(brightness=(0.7, 1.1), contrast=(0.5, 1.15), saturation=(0.25, 1.5), hue=(-0.5, 0.5)),
+    transforms.ColorJitter(brightness=(0.7, 1.1), contrast=(0.5, 1.15), saturation=(0.25, 1.5), hue=(-0.1, 0.1)),
+    SquareResize(image_size),
     transforms.ToTensor(),
     StaticNoise(intensity_min=0.0, intensity_max=0.025),
     transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
