@@ -8,7 +8,7 @@ model_name = "main10"
 train = False
 continue_training = False
 batch_size = 32
-num_epochs = 5
+num_epochs = 3
 
 #Debug
 dataset_validation = False
@@ -35,7 +35,7 @@ if __name__ == '__main__':
         remove_bad_images("D:/DATA/E621/sorted/1/")
 
     if mass_image_test:
-        image_test(model_name, "D:/DATA/E621/sorted/0/", True, 0.75)
+        image_test(model_name, "D:/DATA/E621/sorted/0/", True, 0.9)
         
     if feature_analysis:
         model_features(model_name, batch_size)

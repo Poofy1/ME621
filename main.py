@@ -18,8 +18,8 @@ class MyOpener(FancyURLopener):
 myopener = MyOpener()
 
 
-me621_model_name = "main9"
-me621_threshold = 0.75
+me621_model_name = "main10"
+me621_threshold = 0.80
 
 
 def load_last_image_id():

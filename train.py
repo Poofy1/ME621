@@ -22,7 +22,6 @@ from efficientnet_pytorch import EfficientNet
 from torch.utils.data import WeightedRandomSampler
 from torchvision.transforms import functional as F
 import multiprocessing
-import umap
 import warnings
 from sklearn.exceptions import UndefinedMetricWarning
 from torchinfo import summary
@@ -37,7 +36,7 @@ warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
 
 # Config
 image_size = 224
-weight_decay = 0 #1e-5
+weight_decay = 1e-5
 dropout_rate = 0.5
 train_path = 'D:/DATA/E621/train/'
 val_path = 'D:/DATA/E621/val/'
@@ -82,7 +81,7 @@ transform = transforms.Compose([
     transforms.ColorJitter(brightness=(0.7, 1.1), contrast=(0.5, 1.15), saturation=(0.25, 1.5), hue=(-0.1, 0.1)),
     SquareResize(image_size),
     transforms.ToTensor(),
-    StaticNoise(intensity_min=0.0, intensity_max=0.025),
+    StaticNoise(intensity_min=0.0, intensity_max=0.03),
     transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
 ])
 

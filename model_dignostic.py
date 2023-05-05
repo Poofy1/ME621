@@ -60,8 +60,8 @@ def image_test(model_name, input_dir, move_images, threshold):
             if move_images:
                 if predicted_prob > threshold:
                     shutil.move(image_path, f"D:/DATA/E621/waiting_for_review/good/")
-                else:
-                    shutil.move(image_path, f"D:/DATA/E621/waiting_for_review/bad/")
+                #else:
+                    #shutil.move(image_path, f"D:/DATA/E621/waiting_for_review/bad/")
             else: 
                 if predicted_prob > threshold:
                     print(f"{image_name}: {predicted_prob:.3f}")
