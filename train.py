@@ -1,9 +1,5 @@
 import torch
 import os
-from torchvision.transforms import ToPILImage
-import plotly.express as px
-import plotly.offline as pyo
-import cv2
 import random
 import torch.nn as nn
 import pandas as pd
@@ -20,7 +16,6 @@ import torchvision.models as models
 from collections import Counter
 from efficientnet_pytorch import EfficientNet
 from torch.utils.data import WeightedRandomSampler
-from torchvision.transforms import functional as F
 import multiprocessing
 import warnings
 from sklearn.exceptions import UndefinedMetricWarning
@@ -38,8 +33,8 @@ warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
 image_size = 224
 weight_decay = 1e-5
 dropout_rate = 0.5
-train_path = 'D:/DATA/E621/train/'
-val_path = 'D:/DATA/E621/val/'
+train_path = "F:/CODE/ME621/Dataset/train/"
+val_path = "F:/CODE/ME621/Dataset/val/"
 
 class StaticNoise:
     def __init__(self, intensity_min=0.0, intensity_max=0.2):
@@ -74,11 +69,11 @@ class SquareResize:
 # Define transforms for data augmentation
 transform = transforms.Compose([
     transforms.RandomRotation(degrees=90),
-    transforms.RandomResizedCrop(size=image_size, scale=(0.95, 1.5)),
+    transforms.RandomResizedCrop(size=image_size, scale=(1, 1.5)),
     transforms.RandomPerspective(distortion_scale=0.5),
     #transforms.GaussianBlur(kernel_size=3, sigma=(0.0001, 0.3)),
     transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(brightness=(0.7, 1.1), contrast=(0.5, 1.15), saturation=(0.25, 1.5), hue=(-0.1, 0.1)),
+    transforms.ColorJitter(brightness=(0.7, 1.1), contrast=(0.35, 1.15), saturation=(0, 1.5), hue=(-0.1, 0.1)),
     SquareResize(image_size),
     transforms.ToTensor(),
     StaticNoise(intensity_min=0.0, intensity_max=0.03),
@@ -147,7 +142,7 @@ class MyModel(nn.Module):
         
         # Unfreeze the last two blocks
         num_blocks = len(self.efficientnet._blocks)
-        for block_idx in range(num_blocks - 2, num_blocks):
+        for block_idx in range(num_blocks - 5, num_blocks):
             for param in self.efficientnet._blocks[block_idx].parameters():
                 param.requires_grad = True
         

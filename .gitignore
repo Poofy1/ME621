@@ -11,6 +11,9 @@
 *.sln.docstates
 *.png
 *.jpg
+*.jpeg
+*.jfif
+*.webp
 
 *.html
 

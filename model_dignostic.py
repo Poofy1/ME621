@@ -10,7 +10,9 @@ import warnings
 from tqdm import tqdm as tqdm_loop
 from gradcam import GradCAMpp
 from gradcam.utils import visualize_cam
+from PIL import ImageFile
 import torchvision.transforms as transforms
+from concurrent.futures import ThreadPoolExecutor
 from torch.utils.data import DataLoader
 import umap
 from train import *
@@ -33,45 +35,127 @@ def postprocess_image(image_tensor):
 
 
 
-def remove_bad_images(image_path):
-    for image in tqdm(os.listdir(image_path)):
+
+
+def create_dataset(input_path, output_path, split):
+    
+    if os.path.exists(output_path):
+        shutil.rmtree(output_path)
+    
+    train0 = f"{output_path}/train/0"
+    train1 = f"{output_path}/train/1"
+    val0 = f"{output_path}/val/0"
+    val1 = f"{output_path}/val/1"
+    
+    os.makedirs(output_path)
+    os.makedirs(train0)
+    os.makedirs(train1)
+    os.makedirs(val0)
+    os.makedirs(val1)
+    
+    # Get a list of all files in input_path/0 and input_path/1
+    input0_files = os.listdir(f"{input_path}/0/")
+    input1_files = os.listdir(f"{input_path}/1/")
+
+    # Shuffle the files randomly
+    random.shuffle(input0_files)
+    random.shuffle(input1_files)
+
+    # Calculate the number of files for validation
+    num_val_input1 = int(len(input1_files) * split)
+    num_val_input0 = num_val_input1 # must be the same as input 1
+    
+    print(f"Train_0 Size: {len(input0_files) - num_val_input0}")
+    print(f"Train_1 Size: {len(input1_files) - num_val_input1}")
+    print(f"Val_0 Size: {num_val_input0}")
+    print(f"Val_1 Size: {num_val_input1}")
+
+    # Copy files to train and val folders
+    for i, (input0_file, input1_file) in enumerate(tqdm_loop(zip(input0_files, input1_files))):
+        if i < num_val_input0:
+            shutil.copy2(os.path.join(input_path, '0', input0_file), os.path.join(val0, input0_file))
+        else:
+            shutil.copy2(os.path.join(input_path, '0', input0_file), os.path.join(train0, input0_file))
+
+        if i < num_val_input1:
+            shutil.copy2(os.path.join(input_path, '1', input1_file), os.path.join(val1, input1_file))
+        else:
+            shutil.copy2(os.path.join(input_path, '1', input1_file), os.path.join(train1, input1_file))
+
+
+
+
+
+
+            
+def process_image(image_path, image):
+    try:
+        with open(f"{image_path}{image}", 'rb') as f:
+            img = Image.open(f)
+    except:
+        print(f"Removing image: {image}")
+        os.remove(f"{image_path}/{image}")
+
+def remove_bad_images(image_path, num_workers=12):
+    images = os.listdir(image_path)
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(process_image, image_path, image) for image in images]
+
+
+
+class TestDataset(Dataset):
+    def __init__(self, input_dir, transform=None):
+        self.input_dir = input_dir
+        self.transform = transform
+        self.samples = [os.path.join(input_dir, img) for img in os.listdir(input_dir)]
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        image_path = self.samples[index]
+        image_name = os.path.basename(image_path)
+        
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
         try:
-            with open(f"{image_path}{image}", 'rb') as f:
-                img = Image.open(f)
-                #img.convert('RGB')
-        except:
-            print(f"Removing image: {image}")
-            os.remove(f"{image_path}/{image}")
+            image = Image.open(image_path).convert("RGB")
+        except IOError:
+            print(f"Failed to load {image_path}")
+            return None, image_name
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, image_name
 
 def image_test(model_name, input_dir, move_images, threshold):
     model = torch.load(f"{env}/models/{model_name}.pt")
+    model.to(device)
+    model.eval()
 
-    for image_name in tqdm_loop(os.listdir(input_dir)):
-        try:
-            image_path = os.path.join(input_dir, image_name)
-            test_image = Image.open(image_path).convert("RGB")
-            test_image_tensor = val_transform(test_image).unsqueeze(0).to(device)
-            with torch.no_grad():
-                output = model(test_image_tensor)
-            probabilities = torch.softmax(output, dim=1)
-            predicted_prob = probabilities[0, 1].item()  
-            
-            
+    dataset = TestDataset(input_dir, transform=val_transform)
+    dataloader = DataLoader(dataset, batch_size=32, num_workers=12)
+
+    for images, image_names in tqdm_loop(dataloader):
+        images = images.to(device)
+
+        with torch.no_grad():
+            outputs = model(images)
+            probabilities = torch.softmax(outputs, dim=1)
+            predicted_probs = probabilities[:, 1].cpu().numpy()
+
+        for idx, predicted_prob in enumerate(predicted_probs):
+            image_name = image_names[idx]
+
             if move_images:
                 if predicted_prob > threshold:
-                    shutil.move(image_path, f"D:/DATA/E621/waiting_for_review/good/")
+                    #print(f"{image_name} good")
+                    shutil.move(os.path.join(input_dir, image_name), f"D:/DATA/E621/waiting_for_review/good/{image_name}")
                 #else:
-                    #shutil.move(image_path, f"D:/DATA/E621/waiting_for_review/bad/")
+                    #shutil.move(os.path.join(input_dir, image_name), f"D:/DATA/E621/waiting_for_review/bad/{image_name}")
             else: 
                 if predicted_prob > threshold:
                     print(f"{image_name}: {predicted_prob:.3f}")
-            
-        except: 
-            pass
-            print(f"{image_name} failed")
-
-
-
 
 def deep_dream(model_name, input_image, iterations, lr):
     # Load the final trained model
