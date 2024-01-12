@@ -1,5 +1,7 @@
 import os, csv, pickle, datetime, requests, time
 from requests.exceptions import RequestException
+import pandas as pd
+import numpy as np
 
 
 def fetch_with_retries(url, headers, max_retries=5, delay=5):
@@ -19,6 +21,24 @@ def fetch_with_retries(url, headers, max_retries=5, delay=5):
     return None
     
     
+def add_valid_column(csv_file, split = .2):
+    # Read the CSV file
+    df = pd.read_csv(csv_file)
+
+    # Check if 'Valid' column exists
+    if 'Valid' not in df.columns:
+        df['Valid'] = 0  # Initialize all as 0
+
+        # Determine the number of rows to mark as valid (20%)
+        num_valid = int(len(df) * split)
+
+        # Randomly select rows and set them to 1
+        valid_indices = np.random.choice(df.index, num_valid, replace=False)
+        df.loc[valid_indices, 'Valid'] = 1
+
+    # Save the updated dataframe
+    df.to_csv(csv_file, index=False)
+
     
 if __name__ == "__main__":
     
@@ -49,9 +69,6 @@ if __name__ == "__main__":
         last_stored_starting_point = pickle_data['starting_point']
         forgotten_starting_point = pickle_data['last_stored_starting_point']
         
-        
-        
-
         
     else:
         url = f'https://e621.net/posts.json?page=b320&tags=-animated&limit=320'
@@ -149,3 +166,11 @@ if __name__ == "__main__":
         with open(source_dir, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerows(image_data)
+
+            
+            
+            
+    # Apply validation split
+    add_valid_column(source_dir, split = .2)
+    
+    print("Finished Operations")

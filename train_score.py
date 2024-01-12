@@ -56,25 +56,55 @@ class SquareResize:
 
         return resized_img
 
+def create_datasets(image_dir, data_csv, image_size):
+    # Load the dataset
+    dataset_df = pd.read_csv(data_csv, usecols=['ID', 'Upvotes', 'Downvotes', 'Favorites', 'Valid'])
+
+    # Split into train and val
+    train_df = dataset_df[dataset_df['Valid'] == 0]
+    val_df = dataset_df[dataset_df['Valid'] == 1]
+
+    # Create image paths
+    train_image_paths = [os.path.join(image_dir, f"{image_id}.png") for image_id in train_df['ID']]
+    val_image_paths = [os.path.join(image_dir, f"{image_id}.png") for image_id in val_df['ID']]
+
+    # Convert DataFrame columns to lists
+    train_labels = train_df[['Upvotes', 'Downvotes', 'Favorites']].values.tolist()
+    val_labels = val_df[['Upvotes', 'Downvotes', 'Favorites']].values.tolist()
+
+    # Define transforms
+    train_transform = transforms.Compose([
+                transforms.RandomRotation(degrees=90),
+                transforms.RandomResizedCrop(size=image_size, scale=(1, 1.5)),
+                transforms.RandomPerspective(distortion_scale=0.5),
+                transforms.RandomHorizontalFlip(),
+                #transforms.GaussianBlur(kernel_size=3, sigma=(0.0001, 0.3)),
+                transforms.ColorJitter(brightness=(0.7, 1.1), contrast=(0.35, 1.15), saturation=(0, 1.5), hue=(-0.1, 0.1)),
+                SquareResize(image_size),
+                transforms.ToTensor(),
+                StaticNoise(intensity_min=0.0, intensity_max=0.03),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                ])
+    val_transform = transforms.Compose([
+                SquareResize(image_size),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                ])
+
+
+    # Create datasets
+    train_dataset = ME621_Dataset(train_image_paths, train_labels, transform=train_transform)
+    val_dataset = ME621_Dataset(val_image_paths, val_labels, transform=val_transform)
+
+    return train_dataset, val_dataset
 
 
 
-class MyDataset(Dataset):
-    def __init__(self, root, transform=None):
-        self.root = root
+class ME621_Dataset(Dataset):
+    def __init__(self, image_paths, labels, transform=None):
+        self.image_paths = image_paths
+        self.labels = labels
         self.transform = transform
-        self.image_paths, self.labels = self._get_data()
-
-    def _get_data(self):
-        image_paths = []
-        labels = []
-        for label, class_name in enumerate(os.listdir(self.root)):
-            class_path = os.path.join(self.root, class_name)
-            for image_name in os.listdir(class_path):
-                image_path = os.path.join(class_path, image_name)
-                image_paths.append(image_path)
-                labels.append(label)
-        return image_paths, labels
 
     def __len__(self):
         return len(self.image_paths)
@@ -83,27 +113,17 @@ class MyDataset(Dataset):
         img_path = self.image_paths[index]
         img = Image.open(img_path).convert("RGB")
         label = self.labels[index]
-        
-        if self.transform:
-            img = self.transform(img)
-            
-            ###
-            """# Reverse normalization
-            denorm = lambda t: (t * 0.5) + 0.5
-            inv_img = denorm(img.clone())
 
-            # Save the image
-            transformed_img_path = os.path.join("D:/DATA/E621", f"{index}.png")
-            img_save = transforms.ToPILImage()(inv_img)
-            img_save.save(transformed_img_path)"""
-            ###
+        # Transform
+        img = self.transform(img)
 
         return img, label
+    
+    
 
-
-class MyModel(nn.Module):
+class ME621_Model(nn.Module):
     def __init__(self, num_classes=2):
-        super(MyModel, self).__init__()
+        super(ME621_Model, self).__init__()
         self.efficientnet = EfficientNet.from_pretrained("efficientnet-b0", dropout_rate=dropout_rate)
     
         # Freeze all layers in EfficientNet
@@ -141,70 +161,45 @@ class MyModel(nn.Module):
 
         return x
 
-# Config
-image_size = 224
-weight_decay = 1e-5
-dropout_rate = 0.5
-train_path = "F:/CODE/ME621/Dataset/train/"
-val_path = "F:/CODE/ME621/Dataset/val/"
-
-# Define transforms for data augmentation
-transform = transforms.Compose([
-    transforms.RandomRotation(degrees=90),
-    transforms.RandomResizedCrop(size=image_size, scale=(1, 1.5)),
-    transforms.RandomPerspective(distortion_scale=0.5),
-    #transforms.GaussianBlur(kernel_size=3, sigma=(0.0001, 0.3)),
-    transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(brightness=(0.7, 1.1), contrast=(0.35, 1.15), saturation=(0, 1.5), hue=(-0.1, 0.1)),
-    SquareResize(image_size),
-    transforms.ToTensor(),
-    StaticNoise(intensity_min=0.0, intensity_max=0.03),
-    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-])
 
 
-# Define transforms for data augmentation
-val_transform = transforms.Compose([
-    SquareResize(image_size),
-    transforms.ToTensor(),
-    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-])
+if __name__ == "__main__":
+    
+    # Config
+    name = 'test'
+    image_size = 350
+    dropout_rate = 0.5
+    batch_size = 64
+    epochs = 100
+    image_path = 'D:/DATA/E621/'
+    data_csv = 'D:/DATA/E621/source_images.csv'
 
 
-def train_model(name, continue_training, batch_size, num_epochs, ):
-    multiprocessing.freeze_support()
- 
+    # Load the dataset
+    print('Preparing Dataset...')
+    train_dataset, val_dataset = create_datasets(image_path, data_csv, image_size)
+
+
+    # DataLoaders
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, persistent_workers=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
+
+
     # Define model, loss function, and optimizer
-    model = MyModel().to(device)
-
-    # print out the model summary
+    model = ME621_Model().to(device)
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
     summary(model, input_size=(batch_size, 3, image_size, image_size))
     
-        
-    # Load the dataset
-    train_dataset = MyDataset(train_path, transform = transform)
-    val_dataset = MyDataset(val_path, transform = val_transform)
-
-    # Calculate class counts and weights for the training set
-    train_class_counts = Counter(train_dataset.labels)
-    train_total_samples = len(train_dataset.labels)
-    train_class_weights = [train_total_samples / train_class_counts[label] for label in train_dataset.labels]
-    train_sampler = WeightedRandomSampler(train_class_weights, len(train_dataset))
-
-    # Create the DataLoaders for the training and validation sets
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, num_workers=8, persistent_workers=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
-    
-    # Define the weighted loss function
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=weight_decay)
     
     # Continue Training?
-    if continue_training:
-        model = torch.load(f"{env}/models/{name}.pt")
+    os.makedirs(f"{env}/models/", exist_ok=True)
+    model_path = f"{env}/models/{name}.pt"
+    if os.path.exists(model_path):
+        model = torch.load(model_path)
         
     print("Starting Training...")
-    for epoch in range(num_epochs):
+    for epoch in range(epochs):
         model.train()
         train_loss = 0.0
         train_acc = 0.0

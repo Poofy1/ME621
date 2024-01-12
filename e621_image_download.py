@@ -22,7 +22,6 @@ def download_image(image_info, image_folder, headers, max_retries=5, delay=5):
                     with open(file_path, 'wb') as file:
                         file.write(response.content)
                     
-                    print(f"Finished download for ID: {image_info['ID']}")
                     return 1
 
             except RequestException as e:
@@ -33,7 +32,14 @@ def download_image(image_info, image_folder, headers, max_retries=5, delay=5):
 
     return 0
 
-
+def process_images_in_batch(batch, image_folder, headers):
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        futures = [executor.submit(download_image, row.to_dict(), image_folder, headers) for _, row in batch.iterrows()]
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+            except Exception as e:
+                print(f"An error occurred: {e}")
     
 if __name__ == "__main__":
     
@@ -46,20 +52,14 @@ if __name__ == "__main__":
     image_folder = f'{save_dir}/images/'
     os.makedirs(image_folder, exist_ok=True)
 
-    # Load CSV data
-    print("Loading Source Data")
-    image_data = pd.read_csv(source_dir)
-    
-    print("Downloading Images")
-    with tqdm.tqdm(total=len(image_data)) as pbar:
-        with ThreadPoolExecutor(max_workers=9) as executor:
-            # Ensure each row is passed as a dictionary
-            futures = [executor.submit(download_image, row.to_dict(), image_folder, headers) for _, row in image_data.iterrows()]
+    # Define the columns to load and the chunksize
+    columns_to_load = ['ID', 'Sample URL']
+    chunksize = 10000 
 
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                except Exception as e:
-                    print(f"An error occurred: {e}")
-
-                pbar.update(1)
+    # Initialize tqdm progress bar
+    print("Loading Source Data and Downloading Images")
+    total_chunks = pd.read_csv(source_dir, usecols=columns_to_load).shape[0] // chunksize
+    with tqdm.tqdm(total=total_chunks) as pbar:
+        for chunk in pd.read_csv(source_dir, usecols=columns_to_load, chunksize=chunksize):
+            process_images_in_batch(chunk, image_folder, headers)
+            pbar.update(1)
