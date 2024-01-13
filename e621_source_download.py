@@ -21,20 +21,19 @@ def fetch_with_retries(url, headers, max_retries=5, delay=5):
     return None
     
     
-def add_valid_column(csv_file, split = .2):
+def add_valid_column(csv_file, split=0.2):
     # Read the CSV file
     df = pd.read_csv(csv_file)
 
-    # Check if 'Valid' column exists
-    if 'Valid' not in df.columns:
-        df['Valid'] = 0  # Initialize all as 0
+    # Initialize all rows in 'Valid' column as 0
+    df['Valid'] = 0
 
-        # Determine the number of rows to mark as valid (20%)
-        num_valid = int(len(df) * split)
+    # Determine the number of rows to mark as valid
+    num_valid = int(len(df) * split)
 
-        # Randomly select rows and set them to 1
-        valid_indices = np.random.choice(df.index, num_valid, replace=False)
-        df.loc[valid_indices, 'Valid'] = 1
+    # Randomly select rows and set them to 1
+    valid_indices = np.random.choice(df.index, num_valid, replace=False)
+    df.loc[valid_indices, 'Valid'] = 1
 
     # Save the updated dataframe
     df.to_csv(csv_file, index=False)
@@ -171,6 +170,6 @@ if __name__ == "__main__":
             
             
     # Apply validation split
-    add_valid_column(source_dir, split = .2)
+    add_valid_column(source_dir, split = .05)
     
     print("Finished Operations")

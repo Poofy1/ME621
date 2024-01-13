@@ -1,11 +1,12 @@
 import torch
 import os
 import random
+import gc
 import torch.nn as nn
 import pandas as pd
 import matplotlib.pyplot as plt
+import math
 from PIL import Image
-import ast
 import torch.optim as optim
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
@@ -61,58 +62,110 @@ def process_single_image(img_path, output_dir, resize_and_pad):
     try:
         img_name = os.path.basename(img_path)
         output_path = os.path.join(output_dir, img_name)
-        
-        if os.path.exists(output_path):  # Skip images that are already processed
-            return output_path
-        
+
         image = Image.open(img_path)
         image = resize_and_pad(image)
         image.save(output_path)
-        return output_path
+        
+        try:
+            with Image.open(output_path) as img:
+                img.load()
+            return output_path, img_path
+        except: 
+            print("Removing: ", img_name)
+            os.remove(output_path)
+            os.remove(img_path)
+            return 0
     except:
         return 0
 
+
 def preprocess_and_save_images(df, output_dir, image_size):
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    csv_file_path = os.path.join(output_dir, f'images_{image_size}.csv')
+
+    folder_output = f'{output_dir}/images_{image_size}'
+    if not os.path.exists(folder_output):
+        os.makedirs(folder_output)
+
+    # Load processed images and create a mapping from ID to processed path
+    processed_image_mapping = {}
+    if os.path.exists(csv_file_path):
+        with open(csv_file_path, 'r') as file:
+            for line in file:
+                processed_path = line.strip()
+                image_id = os.path.splitext(os.path.basename(processed_path))[0]
+                processed_image_mapping[image_id] = processed_path
 
     resize_and_pad = SquareResize(image_size)
-    failed_images = 0
+    successful_images = []
+    failed_images = []
+    batch_size = 10000  # Define your batch size
 
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
-        futures = {executor.submit(process_single_image, row['path'], output_dir, resize_and_pad): index for index, row in df.iterrows()}
-        
-        with tqdm(total=len(futures)) as pbar:
+        futures = {}
+        for index, row in df.iterrows():
+            image_id = os.path.splitext(os.path.basename(row['path']))[0]
+            if image_id not in processed_image_mapping:
+                future = executor.submit(process_single_image, row['path'], folder_output, resize_and_pad)
+                futures[future] = index
+            else:
+                # Update the path to the processed image
+                df.at[index, 'path'] = processed_image_mapping[image_id]
+
+        # Modify this part to handle both new_path and original_path
+        with tqdm(total=len(futures) // batch_size + (len(futures) % batch_size > 0)) as pbar:
+            batch_counter = 0
             for future in as_completed(futures):
                 index = futures[future]
-                new_path = future.result()
-                if new_path == 0:
-                    failed_images += 1
-                    df.at[index, 'path'] = None  # Mark failed images with None
+                result = future.result()
+                if result[0] == 0:  # Assuming future.result() returns (new_path, original_path)
+                    failed_images.append(index)
                 else:
-                    df.at[index, 'path'] = new_path  # Update path with new path
+                    new_path, original_path = result
+                    successful_images.append((new_path, original_path))  # Store as a tuple
+                    df.at[index, 'path'] = new_path
+
+                batch_counter += 1
+                if batch_counter >= batch_size:
+                    pbar.update()
+                    batch_counter = 0
+
+            if batch_counter > 0:  # Ensure the last batch is counted
                 pbar.update()
 
-    print("Failed Images: ", failed_images)
+    # Write successful images to CSV file with headers
+    headers = ['new_path', 'original_path']
+    file_exists = os.path.isfile(csv_file_path) and os.path.getsize(csv_file_path) > 0
 
-    # Remove rows with failed images
+    with open(csv_file_path, 'a' if file_exists else 'w') as csv_file:
+        if not file_exists:
+            csv_file.write(','.join(headers) + '\n')
+        for new_path, original_path in successful_images:
+            csv_file.write(f"{new_path},{original_path}\n")
+
+    print("Failed Images: ", len(failed_images))
+    df = df.drop(failed_images)
     df = df.dropna(subset=['path'])
-
+    
+    # After processing, clear large lists and trigger garbage collection
+    successful_images.clear()
+    failed_images.clear()
+    gc.collect()
+    
     return df
+
 
 
 def create_datasets(image_dir, data_csv, output_dir, image_size):
     # Load the dataset
     dataset_df = pd.read_csv(data_csv, usecols=['ID', 'Created Date', 'Saved Timestamp', 'Upvotes', 'Downvotes', 'Favorites', 'Valid'])
 
-    
     # Find age
     dataset_df['Created Date'] = pd.to_datetime(dataset_df['Created Date'], utc=True)
     dataset_df['Saved Timestamp'] = pd.to_datetime(dataset_df['Saved Timestamp']).dt.tz_localize('Etc/GMT+6').dt.tz_convert('UTC')
     dataset_df['age'] = (dataset_df['Saved Timestamp'] - dataset_df['Created Date']).dt.total_seconds() / (24 * 60 * 60)
     dataset_df = dataset_df.drop(columns=['Created Date', 'Saved Timestamp'])
 
-    
     # Prepare ID list for multiprocessing
     ids = dataset_df['ID'].tolist()
 
@@ -124,10 +177,13 @@ def create_datasets(image_dir, data_csv, output_dir, image_size):
     dataset_df['exists'], dataset_df['path'] = zip(*results)
 
     # Filter out non-existing images
-    existing_images_df = dataset_df[dataset_df['exists']]
+    dataset_df = dataset_df[dataset_df['exists']]
+    
+    # Keep only the first 100 rows of the existing images
+    dataset_df = dataset_df.head(100) # DEBUG
 
     # Preprocess images and update DataFrame
-    updated_df = preprocess_and_save_images(existing_images_df, output_dir, image_size)
+    updated_df = preprocess_and_save_images(dataset_df, output_dir, image_size)
 
     # Split into train and val sets
     train_df = updated_df[updated_df['Valid'] == 0]
@@ -168,6 +224,9 @@ def create_datasets(image_dir, data_csv, output_dir, image_size):
     #train_dataset.show_image(0)
     #train_dataset.show_image(1)
     #train_dataset.show_image(2)
+    
+    updated_df.clear()
+    gc.collect()
 
     return train_dataset, val_dataset
 
@@ -190,7 +249,7 @@ class ME621_Dataset(Dataset):
             img = self.transform(img).to(device)
 
         age_input = torch.tensor([self.age_values[index]], dtype=torch.float32).to(device)
-        label = torch.tensor(self.labels[index], dtype=torch.int32).to(device)  # Ensure labels are integers
+        label = torch.tensor(self.labels[index], dtype=torch.float32).to(device)  # Ensure labels are integers
 
         return (img, age_input), label
 
@@ -245,7 +304,8 @@ class ME621_Model(nn.Module):
         features = features.view(features.size(0), -1)
 
         # Concatenate the additional float input
-        combined_input = torch.cat((features, age_input.unsqueeze(1)), dim=1)
+        # Since age_input is already in the correct shape (torch.Size([32, 1])), no need to unsqueeze
+        combined_input = torch.cat((features, age_input), dim=1)
 
         # Pass through the classifier
         out = self.classifier(combined_input)
@@ -255,13 +315,14 @@ class ME621_Model(nn.Module):
 if __name__ == "__main__":
     
     # Config
-    name = 'test'
+    name = 'ME621_Score'
     image_size = 300
     dropout_rate = 0.0
     batch_size = 32
-    epochs = 100
+    epochs = 50
+    mini_epoch_size = 500000
     raw_image_path = 'D:/DATA/E621/images/'
-    ready_images_path = f'D:/DATA/E621/images_{image_size}/'
+    ready_images_path = f'K:/Temp_SSD_Data/'
     data_csv = 'D:/DATA/E621/source_images.csv'
 
 
@@ -279,7 +340,7 @@ if __name__ == "__main__":
     model = ME621_Model(num_classes=3, dropout_rate=dropout_rate).to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    summary(model, input_size=(batch_size, 3, image_size, image_size))
+    summary(model, input_size=[(batch_size, 3, image_size, image_size), (batch_size, 1)])
     
     
     # Continue Training?
@@ -296,76 +357,67 @@ if __name__ == "__main__":
 
         
     lowest_val_loss = float('inf')
+    batches_per_mini_epoch = mini_epoch_size // batch_size
     
+
     print("Starting Training...")
     for epoch in range(start_epoch, epochs):
-        model.train()
-        train_loss = 0
-        total_mse = 0
-        train_acc = 0
-        total_samples = 0
-        y_pred = []
-        y_true = []
+        total_mini_epochs = math.ceil(len(train_dataloader.dataset) / mini_epoch_size)
+        
+        for mini_epoch in range(total_mini_epochs):
+            model.train()
+            train_loss = 0
+            batch_counter = 0
 
-        for inputs, labels in tqdm(train_dataloader):
-            img, age_input = inputs
-            outputs = model(img, age_input)
+            # Set the correct total for tqdm
+            with tqdm(total=batches_per_mini_epoch) as pbar:
+                for inputs, labels in train_dataloader:
+                    if batch_counter >= batches_per_mini_epoch:
+                        break  # Move to the next mini-epoch after processing enough batches
 
-            loss = criterion(outputs, labels)
+                    img, age_input = inputs
+                    outputs = model(img, age_input)
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                    loss = criterion(outputs, labels)
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
 
-            train_loss += loss.item() * img.size(0)
+                    train_loss += loss.item() * img.size(0)
+                    batch_counter += 1
+                    pbar.update(1)  # Update progress bar by one batch
 
-            # For regression, calculate metrics like MSE instead of accuracy
-            mse = nn.MSELoss()
-            current_mse = mse(outputs, labels).item()
-            total_mse += current_mse * img.size(0)
-
-        total_samples = len(train_dataloader.dataset)
-        train_loss = train_loss / total_samples
-        train_mse = total_mse / total_samples
-
-        print(f'Epoch: {epoch} Training Loss: {train_loss:.6f} MSE: {train_mse:.6f}')
+            train_loss /= (batch_counter * batch_size)
 
         
-        # Validation loop
-        model.eval()
-        val_loss = 0
-        total_mse = 0
-        total_samples = 0
+            # Validation loop
+            model.eval()
+            val_loss = 0
+            total_mse = 0
+            total_samples = 0
 
-        with torch.no_grad():  # No need to calculate gradients during validation
-            for inputs, labels in tqdm(val_dataloader):
-                img, age_input = inputs
-                outputs = model(img)
-                loss = criterion(outputs, labels)
+            with torch.no_grad():  # No need to calculate gradients during validation
+                for inputs, labels in tqdm(val_dataloader):
+                    img, age_input = inputs
+                    outputs = model(img, age_input)
+                    loss = criterion(outputs, labels)
 
-                val_loss += loss.item() * img.size(0)
+                    val_loss += loss.item() * img.size(0)
 
-                # For regression, calculate metrics like MSE instead of accuracy
-                mse = nn.MSELoss()
-                current_mse = mse(outputs, labels).item()
-                total_mse += current_mse * img.size(0)
-
-        total_samples = len(val_dataloader.dataset)
-        val_loss = val_loss / total_samples
-        val_mse = total_mse / total_samples
-
-        print(f'Epoch: {epoch} Val Loss: {val_loss:.6f} Val MSE: {val_mse:.6f}')
+            total_samples = len(val_dataloader.dataset)
+            val_loss = val_loss / total_samples
+            
+            
+            print(f'Epoch: {epoch} | Mini-Epoch: | {mini_epoch} | Train Loss: {train_loss:.5f} | Val Loss: {val_loss:.5f}')
 
 
-
-
-        if val_loss < lowest_val_loss:
-            lowest_val_loss = val_loss
-            state = {
-                'epoch': epoch,
-                'model_state': model.state_dict(),
-                'optimizer_state': optimizer.state_dict(),
-                'val_loss': lowest_val_loss
-            }
-            torch.save(state, f"{env}/models/{name}.pt")
-            print(f"Model, optimizer, and epoch saved with improved validation loss: {lowest_val_loss:.6f}")
+            if val_loss < lowest_val_loss:
+                lowest_val_loss = val_loss
+                state = {
+                    'epoch': epoch,
+                    'model_state': model.state_dict(),
+                    'optimizer_state': optimizer.state_dict(),
+                    'val_loss': lowest_val_loss
+                }
+                torch.save(state, f"{env}/models/{name}.pt")
+                print(f"Model saved with improved val loss: {lowest_val_loss:.6f}")
