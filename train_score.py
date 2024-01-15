@@ -20,7 +20,8 @@ from efficientnet_pytorch import EfficientNet
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 env = os.path.dirname(os.path.abspath(__file__))
 warnings.filterwarnings("ignore", category=UserWarning, module="PIL")
-
+torch.backends.cudnn.benchmark = True
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
     
 class SquareResize:
@@ -89,11 +90,10 @@ def preprocess_and_save_images(df, output_dir, image_size):
     print(f'Preprocessed: {len(processed_df)}')
     print(f'Processing: {len(unprocessed_df)}')
 
-    # Update paths for already processed images
-    for index, row in processed_df.iterrows():
-        new_path = processed_images[row['path']]
-        df.at[index, 'path'] = new_path
-
+    # Map original paths to new paths using a dictionary
+    processed_images_map = df['path'].map(processed_images)
+    df.loc[df['path'].isin(processed_images), 'path'] = processed_images_map
+    
     resize_and_pad = SquareResize(image_size)
     failed_images = []
     batch_size = 10000  # Define your batch size
@@ -105,6 +105,7 @@ def preprocess_and_save_images(df, output_dir, image_size):
         total_batches = len(unprocessed_df) // batch_size + (len(unprocessed_df) % batch_size > 0)
         with tqdm(total=total_batches, desc="Resizing Images") as pbar:
             for i in range(0, len(unprocessed_df), batch_size):
+                print(i)
                 batch = unprocessed_df[i:i+batch_size]
                 futures = {executor.submit(process_single_image, row['path'], folder_output, resize_and_pad): row for row in batch}
 
@@ -305,8 +306,8 @@ if __name__ == "__main__":
 
 
     # DataLoaders
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=6, persistent_workers=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=3, persistent_workers=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     
     # Define model, loss function, and optimizer
@@ -342,7 +343,7 @@ if __name__ == "__main__":
         batch_counter = 0
 
         # Train loop
-        for inputs, labels in train_dataloader:
+        for inputs, labels in tqdm(train_dataloader):
             img, age_input = inputs
             outputs = model(img, age_input)
             loss = criterion(outputs, labels)

@@ -1,8 +1,15 @@
-import os, csv, pickle, datetime, requests, time
+import os, csv, pickle, datetime, requests, time, json
+import base64
 from requests.exceptions import RequestException
 import pandas as pd
 import numpy as np
+env = os.path.dirname(os.path.abspath(__file__))
 
+def load_config():
+    with open(f'{env}/config.json', 'r') as config_file:
+        config = json.load(config_file)
+        return config
+    
 
 def fetch_with_retries(url, headers, max_retries=5, delay=5):
     for attempt in range(max_retries):
@@ -40,72 +47,57 @@ def add_valid_column(csv_file, split=0.2):
 
     
 if __name__ == "__main__":
+    config = load_config()
     
-    # Config
-    save_dir = 'D:/DATA/E621/'
-    headers = {'User-Agent': 'Dataset Creator 2.0 (by Poof75 on e621)'}
+    key = f"{config['USERNAME']}:{config['API_KEY']}"
+    key = base64.b64encode(key.encode()).decode()
+    
+    headers = {'User-Agent': config["HEADER"],
+               'Authorization': f"Basic {key}"}
     
     # Initialization
-    source_dir = f'{save_dir}/source_images.csv'
-    pickle_file = f'{save_dir}/source_pageID.pkl'
-    os.makedirs(save_dir, exist_ok=True)
-
+    source_dir = f'{config["SAVE_DIR"]}/source_images.csv'
+    pickle_file = f'{config["SAVE_DIR"]}/source_pageID.pkl'
+    os.makedirs(config["SAVE_DIR"], exist_ok=True)
 
     # Get pageID ending point (starting_point)
-    url = f'https://e621.net/posts.json?page=b999999999&tags=-animated&limit=320'
+    url = f'https://e621.net/posts.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=b999999999&tags=-animated&limit=320'
     response = requests.get(url, headers=headers)
     page = response.json()
-    starting_point = page['posts'][0]['id']
+    ending_point = page['posts'][0]['id']
     
-    
-    starting_point = page['posts'][0]['id']
 
     # Load the last pageID if it exists
     if os.path.exists(pickle_file):
         with open(pickle_file, 'rb') as pf:
             pickle_data = pickle.load(pf)
         pageID = pickle_data['current_pageID']
-        last_stored_starting_point = pickle_data['starting_point']
-        forgotten_starting_point = pickle_data['last_stored_starting_point']
-        
-        
     else:
-        url = f'https://e621.net/posts.json?page=b320&tags=-animated&limit=320'
-        response = requests.get(url, headers=headers)
-        page = response.json()
-        last_stored_starting_point = page['posts'][0]['id']
-    
         pageID = 0
-        forgotten_starting_point = 0
     
+    print(f'Current pageID: {pageID}')
+    print(f'Newest post: {ending_point}')
 
-    # Finding restore point
-    if (pageID <= forgotten_starting_point):
-        pageID = starting_point
-    else:
-        starting_point = last_stored_starting_point
-        last_stored_starting_point = forgotten_starting_point
-    
-    
 
     # Check if CSV file exists and write headers if it doesn't
-    csv_headers = ['ID', 'Created Date', 'Saved Timestamp', 'Source URL', 'Sample URL', 'General Tags', 'Artist Tags', 'Copyright Tags', 'Character Tags', 'Species Tags', 'Meta Tags', 'Rating', 'Upvotes', 'Downvotes', 'Score', 'Favorites', ]
+    csv_headers = ['ID', 'Created Date', 'Saved Date', 'Source URL', 'Sample URL', 'Source Width', 'Source Height', 'General Tags', 'Artist Tags', 'Copyright Tags', 'Character Tags', 'Species Tags', 'Meta Tags', 'Rating', 'Upvotes', 'Downvotes', 'Score', 'Favorites', ]
     if not os.path.exists(source_dir):
         with open(source_dir, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(csv_headers)
     
     # Getting data
-    while pageID > last_stored_starting_point:
+    while pageID < ending_point:
         image_data = []
 
-        print(f"Sourcing page b{pageID}")
-        url = f'https://e621.net/posts.json?page=b{pageID}&tags=-animated&limit=320'
+        print(f"Sourcing page a{pageID}")
+        url = f'https://e621.net/posts.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=a{pageID}&tags=-animated&limit=320'
         page = fetch_with_retries(url, headers)
         if page is None:
             break 
         
         posts = page['posts']
+        pageID = posts[0]['id']
         
         # Current timestamp
         current_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -113,12 +105,15 @@ if __name__ == "__main__":
         for post in posts:
             tags = post['tags']
             score = post['score']
+            file = post['file']
             
             # Columns
             id = post['id']
             created_date = post['created_at']
-            source_url = post['file']['url']
+            source_url = file['url']
             sample_url = post['sample']['url']
+            source_width = file['width']
+            source_height = file['height']
             general_tags = tags['general']
             artist_tags = tags['artist']
             copyright_tags = tags['copyright']
@@ -131,12 +126,14 @@ if __name__ == "__main__":
             score = score['total']
             favorites = post['fav_count']
             
-            if (id > last_stored_starting_point and source_url is not None):
+            if (source_url is not None):
                 image_data.append([id,
                                 created_date, 
                                 current_timestamp,
                                 source_url,
                                 sample_url,
+                                source_width,
+                                source_height,
                                 general_tags,
                                 artist_tags,
                                 copyright_tags,
@@ -149,13 +146,9 @@ if __name__ == "__main__":
                                 score,
                                 favorites])
 
-        pageID = id
-
         # Update the pickle file with the current pageID and starting point
         pickle_data = {
             'current_pageID': pageID,
-            'starting_point': starting_point,
-            'last_stored_starting_point': last_stored_starting_point
         }
         with open(pickle_file, 'wb') as pf:
             pickle.dump(pickle_data, pf)

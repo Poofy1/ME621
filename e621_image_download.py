@@ -11,11 +11,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 def download_image(image_info, image_folder, headers, max_retries=5, delay=5):
 
     image_id = str(image_info['ID'])
-    sample_url = image_info['Sample URL']
     file_path = os.path.join(image_folder, image_id + ".png")
 
-
     if not os.path.exists(file_path):
+        sample_url = image_info['Sample URL']
         attempt = 0
         while attempt < max_retries:
             try:
