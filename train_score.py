@@ -286,34 +286,6 @@ class ME621_Model(nn.Module):
 
         return out
 
-def Validation_Train():
-    model.eval()
-    val_loss = 0
-    total_val_samples = 0
-
-    with torch.no_grad():
-        for val_inputs, val_labels in val_dataloader:
-            val_img, val_age_input = val_inputs
-            val_outputs = model(val_img, val_age_input)
-            val_loss += criterion(val_outputs, val_labels).item() * val_img.size(0)
-            total_val_samples += val_img.size(0)
-
-    val_loss /= total_val_samples
-    print(f'Epoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
-    train_loss = 0
-    total_train_samples = 1
-
-    if val_loss < lowest_val_loss:
-        lowest_val_loss = val_loss
-        state = {
-            'epoch': epoch,
-            'model_state': model.state_dict(),
-            'optimizer_state': optimizer.state_dict(),
-            'val_loss': lowest_val_loss
-        }
-        torch.save(state, f"{env}/models/{name}.pt")
-        print(f"Saved Model")
-
 
 
 if __name__ == "__main__":
@@ -388,8 +360,60 @@ if __name__ == "__main__":
 
             # Perform validation check at specified interval
             if batch_counter % check_interval == 0:
-                Validation_Train()
+                model.eval()
+                val_loss = 0
+                total_val_samples = 0
+
+                with torch.no_grad():
+                    for val_inputs, val_labels in val_dataloader:
+                        val_img, val_age_input = val_inputs
+                        val_outputs = model(val_img, val_age_input)
+                        val_loss += criterion(val_outputs, val_labels).item() * val_img.size(0)
+                        total_val_samples += val_img.size(0)
+
+                val_loss /= total_val_samples
+                print(f'Epoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
+                train_loss = 0
+                total_train_samples = 1
                 model.train()
 
-        Validation_Train()
+                if val_loss < lowest_val_loss:
+                    lowest_val_loss = val_loss
+                    state = {
+                        'epoch': epoch,
+                        'model_state': model.state_dict(),
+                        'optimizer_state': optimizer.state_dict(),
+                        'val_loss': lowest_val_loss
+                    }
+                    torch.save(state, f"{env}/models/{name}.pt")
+                    print(f"Saved Model")
+                    
+                
+
+        model.eval()
+        val_loss = 0
+        total_val_samples = 0
+
+        with torch.no_grad():
+            for val_inputs, val_labels in val_dataloader:
+                val_img, val_age_input = val_inputs
+                val_outputs = model(val_img, val_age_input)
+                val_loss += criterion(val_outputs, val_labels).item() * val_img.size(0)
+                total_val_samples += val_img.size(0)
+
+        val_loss /= total_val_samples
+        print(f'Epoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
+        train_loss = 0
+        total_train_samples = 1
         model.train()
+
+        if val_loss < lowest_val_loss:
+            lowest_val_loss = val_loss
+            state = {
+                'epoch': epoch,
+                'model_state': model.state_dict(),
+                'optimizer_state': optimizer.state_dict(),
+                'val_loss': lowest_val_loss
+            }
+            torch.save(state, f"{env}/models/{name}.pt")
+            print(f"Saved Model")

@@ -56,15 +56,15 @@ if __name__ == "__main__":
                'Authorization': f"Basic {key}"}
     
     # Initialization
-    source_dir = f'{config["SAVE_DIR"]}/source_images.csv'
-    pickle_file = f'{config["SAVE_DIR"]}/source_pageID.pkl'
+    source_dir = f'{config["SAVE_DIR"]}/source_users.csv'
+    pickle_file = f'{config["SAVE_DIR"]}/source_users_pageID.pkl'
     os.makedirs(config["SAVE_DIR"], exist_ok=True)
 
-    """# Get pageID ending point (starting_point)
-    url = f'https://e621.net/posts.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=b999999999&tags=-animated&limit=320'
+    # Get pageID ending point (starting_point)
+    url = f'https://e621.net/users.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=b999999999'
     response = requests.get(url, headers=headers)
     page = response.json()
-    ending_point = page['posts'][0]['id']
+    ending_point = page[0]['id']
     
 
     # Load the last pageID if it exists
@@ -80,7 +80,7 @@ if __name__ == "__main__":
 
 
     # Check if CSV file exists and write headers if it doesn't
-    csv_headers = ['ID', 'Created Date', 'Saved Date', 'Source URL', 'Sample URL', 'Source Width', 'Source Height', 'General Tags', 'Artist Tags', 'Copyright Tags', 'Character Tags', 'Species Tags', 'Meta Tags', 'Rating', 'Upvotes', 'Downvotes', 'Score', 'Favorites', ]
+    csv_headers = ['ID', 'Favorites', ]
     if not os.path.exists(source_dir):
         with open(source_dir, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
@@ -91,7 +91,7 @@ if __name__ == "__main__":
         image_data = []
 
         print(f"Sourcing page a{pageID}")
-        url = f'https://e621.net/posts.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=a{pageID}&tags=-animated&limit=320'
+        url = f'https://e621.net/users.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=a{pageID}&limit=320'
         page = fetch_with_retries(url, headers)
         if page is None:
             break 
@@ -99,52 +99,15 @@ if __name__ == "__main__":
         posts = page['posts']
         pageID = posts[0]['id']
         
-        # Current timestamp
-        current_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
+
         for post in posts:
-            tags = post['tags']
-            score = post['score']
-            file = post['file']
+
             
             # Columns
             id = post['id']
-            created_date = post['created_at']
-            source_url = file['url']
-            sample_url = post['sample']['url']
-            source_width = file['width']
-            source_height = file['height']
-            general_tags = tags['general']
-            artist_tags = tags['artist']
-            copyright_tags = tags['copyright']
-            character_tags = tags['character']
-            species_tags = tags['species']
-            meta_tags = tags['meta']
-            rating = post['rating']
-            upvotes = score['up']
-            downvotes = score['down']
-            score = score['total']
-            favorites = post['fav_count']
-            
-            if (source_url is not None):
-                image_data.append([id,
-                                created_date, 
-                                current_timestamp,
-                                source_url,
-                                sample_url,
-                                source_width,
-                                source_height,
-                                general_tags,
-                                artist_tags,
-                                copyright_tags,
-                                character_tags,
-                                species_tags,
-                                meta_tags,
-                                rating,
-                                upvotes,
-                                downvotes,
-                                score,
-                                favorites])
+
+        
+            image_data.append([id,])
 
         # Update the pickle file with the current pageID and starting point
         pickle_data = {
@@ -157,8 +120,7 @@ if __name__ == "__main__":
         # Update the CSV file
         with open(source_dir, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerows(image_data)"""
-
+            writer.writerows(image_data)
             
             
             
