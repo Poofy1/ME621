@@ -4,18 +4,17 @@ import gc
 import torch.nn as nn
 import pandas as pd
 import matplotlib.pyplot as plt
-from math import ceil, floor
 from PIL import Image
 import torch.optim as optim
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from efficientnet_pytorch import EfficientNet
+import torchvision.models as models
 from tqdm import tqdm
 from multiprocessing import Pool
 import warnings
 from torchinfo import summary
-from efficientnet_pytorch import EfficientNet
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 env = os.path.dirname(os.path.abspath(__file__))
@@ -53,7 +52,7 @@ def process_single_image(img_path, output_dir, resize_and_pad):
         output_path = os.path.join(output_dir, img_name)
         
         if not os.path.exists(output_path):
-            image = Image.open(img_path)
+            image = Image.open(img_path).convert('RGB')
             image = resize_and_pad(image)
             image.save(output_path)
         
@@ -105,7 +104,6 @@ def preprocess_and_save_images(df, output_dir, image_size):
         total_batches = len(unprocessed_df) // batch_size + (len(unprocessed_df) % batch_size > 0)
         with tqdm(total=total_batches, desc="Resizing Images") as pbar:
             for i in range(0, len(unprocessed_df), batch_size):
-                print(i)
                 batch = unprocessed_df[i:i+batch_size]
                 futures = {executor.submit(process_single_image, row['path'], folder_output, resize_and_pad): row for row in batch}
 
@@ -135,16 +133,21 @@ def preprocess_and_save_images(df, output_dir, image_size):
 
 def create_datasets(image_dir, data_csv, output_dir, image_size):
     # Load the dataset
-    dataset_df = pd.read_csv(data_csv, usecols=['ID', 'Created Date', 'Saved Timestamp', 'Upvotes', 'Downvotes', 'Favorites', 'Valid'])
+    dataset_df = pd.read_csv(data_csv, usecols=['ID', 'Created Date', 'Saved Date', 'Source Width', 'Source Height', 'Upvotes', 'Downvotes', 'Favorites', 'Valid'])
     
     # Keep only the first rows of the existing images
     #dataset_df = dataset_df.head(10000) # DEBUG
 
     # Find age
     dataset_df['Created Date'] = pd.to_datetime(dataset_df['Created Date'], utc=True)
-    dataset_df['Saved Timestamp'] = pd.to_datetime(dataset_df['Saved Timestamp']).dt.tz_localize('Etc/GMT+6').dt.tz_convert('UTC')
-    dataset_df['age'] = (dataset_df['Saved Timestamp'] - dataset_df['Created Date']).dt.total_seconds() / (24 * 60 * 60)
-    dataset_df = dataset_df.drop(columns=['Created Date', 'Saved Timestamp'])
+    dataset_df['Saved Date'] = pd.to_datetime(dataset_df['Saved Date']).dt.tz_localize('Etc/GMT+6').dt.tz_convert('UTC')
+    dataset_df['age'] = (dataset_df['Saved Date'] - dataset_df['Created Date']).dt.total_seconds() / (24 * 60 * 60)
+    
+    # Calculate the aspect ratio
+    dataset_df['aspect_ratio'] = dataset_df['Source Width'] / dataset_df['Source Height']
+    dataset_df = dataset_df[(dataset_df['aspect_ratio'] >= 0.5) & (dataset_df['aspect_ratio'] <= 2)]
+    dataset_df = dataset_df.drop(columns=['Created Date', 'Saved Date', 'Source Width', 'Source Height', 'aspect_ratio'])
+
 
     # Prepare ID list for multiprocessing
     ids = dataset_df['ID'].tolist()
@@ -180,7 +183,6 @@ def create_datasets(image_dir, data_csv, output_dir, image_size):
     # Define transforms
     train_transform = transforms.Compose([
                 transforms.RandomHorizontalFlip(),
-                transforms.ColorJitter(brightness=(0.8, 1.1), contrast=(0.8, 1.1), saturation=(0.8, 1.1), hue=(-0.1, 0.1)),
                 transforms.ToTensor(),
                 transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
                 ])
@@ -218,9 +220,8 @@ class ME621_Dataset(Dataset):
 
     def __getitem__(self, index):
         img_path = self.image_paths[index]
-        img = Image.open(img_path).convert("RGB")
-        if self.transform:
-            img = self.transform(img).to(device)
+        img = Image.open(img_path)
+        img = self.transform(img).to(device)
 
         age_input = torch.tensor([self.age_values[index]], dtype=torch.float32).to(device)
         label = torch.tensor(self.labels[index], dtype=torch.float32).to(device)  # Ensure labels are integers
@@ -256,12 +257,11 @@ class ME621_Dataset(Dataset):
 class ME621_Model(nn.Module):
     def __init__(self, num_classes=1, dropout_rate=0.5):
         super(ME621_Model, self).__init__()
-        self.efficientnet = EfficientNet.from_pretrained("efficientnet-b0", dropout_rate=dropout_rate)
-        
-        num_ftrs = self.efficientnet._fc.in_features
+        self.efficientnet = models.efficientnet_v2_s(weights='EfficientNet_V2_S_Weights.DEFAULT')
 
-        # Adjust the fully connected layer to take additional float input
-        self.efficientnet._fc = nn.Identity()  # Remove original classifier
+        # Replace the last classifier layer
+        num_ftrs = self.efficientnet.classifier[1].in_features  # Update this based on the actual structure
+        self.efficientnet.classifier = nn.Identity()  # Remove original classifier
 
         # Define new classifier with additional input for age
         self.classifier = nn.Sequential(
@@ -272,29 +272,59 @@ class ME621_Model(nn.Module):
         )
 
     def forward(self, x, age_input):
-        # Extract features from EfficientNet
-        features = self.efficientnet.extract_features(x)
-        features = nn.functional.adaptive_avg_pool2d(features, 1)
-        features = features.view(features.size(0), -1)
+        # Manually forward through EfficientNet layers
+        # Adapt this to the specific layers and structure of the torchvision EfficientNet
+        x = self.efficientnet.features(x)
+        x = self.efficientnet.avgpool(x)
+        x = torch.flatten(x, 1)
 
         # Concatenate the additional float input
-        # Since age_input is already in the correct shape (torch.Size([32, 1])), no need to unsqueeze
-        combined_input = torch.cat((features, age_input), dim=1)
+        combined_input = torch.cat((x, age_input), dim=1)
 
         # Pass through the classifier
         out = self.classifier(combined_input)
+
         return out
+
+def Validation_Train():
+    model.eval()
+    val_loss = 0
+    total_val_samples = 0
+
+    with torch.no_grad():
+        for val_inputs, val_labels in val_dataloader:
+            val_img, val_age_input = val_inputs
+            val_outputs = model(val_img, val_age_input)
+            val_loss += criterion(val_outputs, val_labels).item() * val_img.size(0)
+            total_val_samples += val_img.size(0)
+
+    val_loss /= total_val_samples
+    print(f'Epoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
+    train_loss = 0
+    total_train_samples = 1
+
+    if val_loss < lowest_val_loss:
+        lowest_val_loss = val_loss
+        state = {
+            'epoch': epoch,
+            'model_state': model.state_dict(),
+            'optimizer_state': optimizer.state_dict(),
+            'val_loss': lowest_val_loss
+        }
+        torch.save(state, f"{env}/models/{name}.pt")
+        print(f"Saved Model")
+
 
 
 if __name__ == "__main__":
     
     # Config
-    name = 'ME621_Score'
+    name = 'ME621_Score_2'
     image_size = 300
     dropout_rate = 0.0
     batch_size = 32
     epochs = 50
-    check_interval = 1000
+    check_interval = 20000
     raw_image_path = 'D:/DATA/E621/images/'
     ready_images_path = f'K:/Temp_SSD_Data/'
     data_csv = 'D:/DATA/E621/source_images.csv'
@@ -327,10 +357,11 @@ if __name__ == "__main__":
         optimizer.load_state_dict(checkpoint['optimizer_state'])
         start_epoch = checkpoint['epoch'] + 1  # Continue from the next epoch
         lowest_val_loss = checkpoint['val_loss']
-        print(f"Model and optimizer loaded with validation loss: {lowest_val_loss:.6f}, resuming from epoch {start_epoch}")
-
+        print(f"Model with val loss: {lowest_val_loss:.6f}, resuming from epoch {start_epoch}")
+    else:
+        lowest_val_loss = float('inf')
         
-    lowest_val_loss = float('inf')
+    
     total_samples = len(train_dataloader.dataset)
     batch_size = train_dataloader.batch_size
     total_batches = -(-total_samples // batch_size)
@@ -357,31 +388,8 @@ if __name__ == "__main__":
 
             # Perform validation check at specified interval
             if batch_counter % check_interval == 0:
-                model.eval()
-                val_loss = 0
-                total_val_samples = 0
-
-                with torch.no_grad():
-                    for val_inputs, val_labels in val_dataloader:
-                        val_img, val_age_input = val_inputs
-                        val_outputs = model(val_img, val_age_input)
-                        val_loss += criterion(val_outputs, val_labels).item() * val_img.size(0)
-                        total_val_samples += val_img.size(0)
-
-                val_loss /= total_val_samples
-                print(f'Epoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
-                train_loss = 0
-                total_train_samples = 1
-
-                if val_loss < lowest_val_loss:
-                    lowest_val_loss = val_loss
-                    state = {
-                        'epoch': epoch,
-                        'model_state': model.state_dict(),
-                        'optimizer_state': optimizer.state_dict(),
-                        'val_loss': lowest_val_loss
-                    }
-                    torch.save(state, f"{env}/models/{name}.pt")
-                    print(f"Saved Model")
-                    
+                Validation_Train()
                 model.train()
+
+        Validation_Train()
+        model.train()

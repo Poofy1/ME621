@@ -60,7 +60,7 @@ if __name__ == "__main__":
     pickle_file = f'{config["SAVE_DIR"]}/source_pageID.pkl'
     os.makedirs(config["SAVE_DIR"], exist_ok=True)
 
-    # Get pageID ending point (starting_point)
+    """# Get pageID ending point (starting_point)
     url = f'https://e621.net/posts.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=b999999999&tags=-animated&limit=320'
     response = requests.get(url, headers=headers)
     page = response.json()
@@ -157,12 +157,12 @@ if __name__ == "__main__":
         # Update the CSV file
         with open(source_dir, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerows(image_data)
+            writer.writerows(image_data)"""
 
             
             
             
     # Apply validation split
-    add_valid_column(source_dir, split = .05)
+    add_valid_column(source_dir, split = .025)
     
     print("Finished Operations")
