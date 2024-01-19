@@ -1,6 +1,5 @@
 import torch
 import os
-import gc
 import torch.nn as nn
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -122,9 +121,6 @@ def preprocess_and_save_images(df, output_dir, image_size):
     print("Failed Images: ", len(failed_images))
     df = df.drop(failed_images)
     df = df.dropna(subset=['path'])
-
-    # After processing, trigger garbage collection
-    gc.collect()
     
     return df
 
@@ -153,7 +149,8 @@ def create_datasets(image_dir, data_csv, output_dir, image_size):
 
     # Use multiprocessing Pool to check file existence in parallel
     with Pool() as pool:
-        results = list(tqdm(pool.starmap(file_exists, [(id, image_dir) for id in ids]), total=len(ids)))
+        results = list(pool.starmap(file_exists, [(id, image_dir) for id in ids]))
+
 
     # Assign results to DataFrame
     dataset_df['path'] = results
@@ -200,9 +197,6 @@ def create_datasets(image_dir, data_csv, output_dir, image_size):
     #train_dataset.show_image(1)
     #train_dataset.show_image(2)
     
-    del updated_df
-    gc.collect()
-
     return train_dataset, val_dataset
 
 
@@ -321,7 +315,8 @@ if __name__ == "__main__":
     # Continue Training?
     os.makedirs(f"{env}/models/", exist_ok=True)
     model_path = f"{env}/models/{name}.pt"
-    start_epoch = 0  # Default starting epoch
+    start_epoch = 0
+    lowest_val_loss = float('inf')
     if os.path.exists(model_path):
         checkpoint = torch.load(model_path)
         model.load_state_dict(checkpoint['model_state'])
@@ -329,8 +324,6 @@ if __name__ == "__main__":
         start_epoch = checkpoint['epoch'] + 1  # Continue from the next epoch
         lowest_val_loss = checkpoint['val_loss']
         print(f"Model with val loss: {lowest_val_loss:.6f}, resuming from epoch {start_epoch}")
-    else:
-        lowest_val_loss = float('inf')
         
     
     total_samples = len(train_dataloader.dataset)
@@ -346,7 +339,6 @@ if __name__ == "__main__":
 
         # Train loop
         for inputs, labels in tqdm(train_dataloader):
-            # Move inputs and labels to the device in one step
             inputs = tuple(input_tensor.to(device) for input_tensor in inputs)
             labels = labels.to(device)
 
@@ -370,10 +362,16 @@ if __name__ == "__main__":
 
                 with torch.no_grad():
                     for val_inputs, val_labels in val_dataloader:
+                        val_inputs = tuple(input_tensor.to(device) for input_tensor in val_inputs)
+                        val_labels = val_labels.to(device)
+
                         val_img, val_age_input = val_inputs
                         val_outputs = model(val_img, val_age_input)
-                        val_loss += criterion(val_outputs, val_labels).item() * val_img.size(0)
-                        total_val_samples += val_img.size(0)
+
+                        # Compute loss based on the actual batch size
+                        current_batch_size = val_img.size(0)
+                        val_loss += criterion(val_outputs, val_labels).item() * current_batch_size
+                        total_val_samples += current_batch_size
 
                 val_loss /= total_val_samples
                 print(f'Epoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
@@ -400,6 +398,9 @@ if __name__ == "__main__":
 
         with torch.no_grad():
             for val_inputs, val_labels in val_dataloader:
+                val_inputs = tuple(input_tensor.to(device) for input_tensor in inputs)
+                val_labels = val_labels.to(device)
+                
                 val_img, val_age_input = val_inputs
                 val_outputs = model(val_img, val_age_input)
                 val_loss += criterion(val_outputs, val_labels).item() * val_img.size(0)
