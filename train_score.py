@@ -9,7 +9,6 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from efficientnet_pytorch import EfficientNet
 import torchvision.models as models
 from tqdm import tqdm
 from multiprocessing import Pool
@@ -19,7 +18,7 @@ from torchinfo import summary
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 env = os.path.dirname(os.path.abspath(__file__))
 warnings.filterwarnings("ignore", category=UserWarning, module="PIL")
-torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.benchmark = False
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
     
@@ -221,10 +220,10 @@ class ME621_Dataset(Dataset):
     def __getitem__(self, index):
         img_path = self.image_paths[index]
         img = Image.open(img_path)
-        img = self.transform(img).to(device)
+        img = self.transform(img)
 
-        age_input = torch.tensor([self.age_values[index]], dtype=torch.float32).to(device)
-        label = torch.tensor(self.labels[index], dtype=torch.float32).to(device)  # Ensure labels are integers
+        age_input = torch.tensor([self.age_values[index]], dtype=torch.float32)
+        label = torch.tensor(self.labels[index], dtype=torch.float32)
 
         return (img, age_input), label
 
@@ -296,9 +295,9 @@ if __name__ == "__main__":
     dropout_rate = 0.0
     batch_size = 32
     epochs = 50
-    check_interval = 20000
+    check_interval = 10000
     raw_image_path = 'D:/DATA/E621/images/'
-    ready_images_path = f'K:/Temp_SSD_Data/'
+    ready_images_path = f'F:/Temp_SSD_Data/ME621/'
     data_csv = 'D:/DATA/E621/source_images.csv'
 
 
@@ -308,15 +307,15 @@ if __name__ == "__main__":
 
 
     # DataLoaders
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
     
     # Define model, loss function, and optimizer
     model = ME621_Model(num_classes=3, dropout_rate=dropout_rate).to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    summary(model, input_size=[(batch_size, 3, image_size, image_size), (batch_size, 1)])
+    #summary(model, input_size=[(batch_size, 3, image_size, image_size), (batch_size, 1)])
     
     
     # Continue Training?
@@ -347,8 +346,13 @@ if __name__ == "__main__":
 
         # Train loop
         for inputs, labels in tqdm(train_dataloader):
+            # Move inputs and labels to the device in one step
+            inputs = tuple(input_tensor.to(device) for input_tensor in inputs)
+            labels = labels.to(device)
+
             img, age_input = inputs
             outputs = model(img, age_input)
+            #print(f"Age: {int(age_input[0].item())} Out: {outputs[0].detach().cpu().numpy().round().astype(int)}, True: {labels[0].cpu().numpy().round().astype(int)}")
             loss = criterion(outputs, labels)
             optimizer.zero_grad()
             loss.backward()
