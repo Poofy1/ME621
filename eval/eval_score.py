@@ -82,7 +82,7 @@ def process_folder(folder_path, image_size, model, device):
         
 if __name__ == "__main__":
     # Config
-    name = 'ME621_Score'
+    name = 'ME621_Score_2'
     image_size = 300
     dropout_rate = 0.0
     image_folder = f'{current_dir}/test_images/'

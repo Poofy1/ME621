@@ -374,7 +374,7 @@ if __name__ == "__main__":
                         total_val_samples += current_batch_size
 
                 val_loss /= total_val_samples
-                print(f'Epoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
+                print(f'\nEpoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
                 train_loss = 0
                 total_train_samples = 1
                 model.train()
@@ -407,7 +407,7 @@ if __name__ == "__main__":
                 total_val_samples += val_img.size(0)
 
         val_loss /= total_val_samples
-        print(f'Epoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
+        print(f'\nEpoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
         train_loss = 0
         total_train_samples = 1
         model.train()
