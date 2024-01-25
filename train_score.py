@@ -1,5 +1,6 @@
 import torch
 import os
+import numpy as np
 import torch.nn as nn
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -132,7 +133,6 @@ def create_datasets(image_dir, data_csv, output_dir, image_size):
     
     # Keep only the first rows of the existing images
     #dataset_df = dataset_df.head(10000) # DEBUG
-
     # Find age
     dataset_df['Created Date'] = pd.to_datetime(dataset_df['Created Date'], utc=True)
     dataset_df['Saved Date'] = pd.to_datetime(dataset_df['Saved Date']).dt.tz_localize('Etc/GMT+6').dt.tz_convert('UTC')
@@ -143,14 +143,12 @@ def create_datasets(image_dir, data_csv, output_dir, image_size):
     dataset_df = dataset_df[(dataset_df['aspect_ratio'] >= 0.5) & (dataset_df['aspect_ratio'] <= 2)]
     dataset_df = dataset_df.drop(columns=['Created Date', 'Saved Date', 'Source Width', 'Source Height', 'aspect_ratio'])
 
-
     # Prepare ID list for multiprocessing
     ids = dataset_df['ID'].tolist()
 
     # Use multiprocessing Pool to check file existence in parallel
     with Pool() as pool:
         results = list(pool.starmap(file_exists, [(id, image_dir) for id in ids]))
-
 
     # Assign results to DataFrame
     dataset_df['path'] = results
@@ -168,8 +166,8 @@ def create_datasets(image_dir, data_csv, output_dir, image_size):
     
     # Create image paths and labels
     train_image_paths = train_df['path'].tolist()
-    val_image_paths = val_df['path'].tolist()
-    
+    val_image_paths = val_df['path'].tolist() 
+
     # Prepare float values (e.g., 'age') for training and validation
     train_age = train_df['age'].tolist()
     val_age = val_df['age'].tolist()
@@ -267,8 +265,8 @@ class ME621_Model(nn.Module):
     def forward(self, x, age_input):
         # Manually forward through EfficientNet layers
         # Adapt this to the specific layers and structure of the torchvision EfficientNet
-        x = self.efficientnet.features(x)
-        x = self.efficientnet.avgpool(x)
+        features = self.efficientnet.features(x)
+        x = self.efficientnet.avgpool(features)
         x = torch.flatten(x, 1)
 
         # Concatenate the additional float input
@@ -277,17 +275,40 @@ class ME621_Model(nn.Module):
         # Pass through the classifier
         out = self.classifier(combined_input)
 
-        return out
+        return out, features
 
+def evaluate_model(model, val_dataloader):
+    model.eval()  # Set the model to evaluation mode
+
+    # Variables to store total absolute differences and counts
+    total_diff = np.zeros(3)  # Assuming there are 3 output variables
+    count = 0
+
+    with torch.no_grad():
+        for val_inputs, val_labels in val_dataloader:
+            val_inputs = tuple(input_tensor.to(device) for input_tensor in val_inputs)
+            val_labels = val_labels.to(device)
+
+            val_img, val_age_input = val_inputs
+            val_outputs, _ = model(val_img, val_age_input)
+
+            # Calculate the absolute difference
+            diff = torch.abs(val_outputs - val_labels)
+            total_diff += diff.sum(dim=0).cpu().numpy()
+            count += val_labels.size(0)
+
+    # Calculate the average absolute differences
+    avg_diff = total_diff / count
+    return avg_diff
 
 
 if __name__ == "__main__":
     
     # Config
     name = 'ME621_Score_2'
-    image_size = 300
+    image_size = 350
     dropout_rate = 0.0
-    batch_size = 32
+    batch_size = 16
     epochs = 50
     check_interval = 10000
     raw_image_path = 'D:/DATA/E621/images/'
@@ -325,6 +346,11 @@ if __name__ == "__main__":
         lowest_val_loss = checkpoint['val_loss']
         print(f"Model with val loss: {lowest_val_loss:.6f}, resuming from epoch {start_epoch}")
         
+        
+    # Evaluate the model
+    avg_diff = evaluate_model(model, val_dataloader)
+    print(f"Average Distance Off for Each Variable: {avg_diff}")
+        
     
     total_samples = len(train_dataloader.dataset)
     batch_size = train_dataloader.batch_size
@@ -343,7 +369,7 @@ if __name__ == "__main__":
             labels = labels.to(device)
 
             img, age_input = inputs
-            outputs = model(img, age_input)
+            outputs, _ = model(img, age_input)
             #print(f"Age: {int(age_input[0].item())} Out: {outputs[0].detach().cpu().numpy().round().astype(int)}, True: {labels[0].cpu().numpy().round().astype(int)}")
             loss = criterion(outputs, labels)
             optimizer.zero_grad()
@@ -366,7 +392,7 @@ if __name__ == "__main__":
                         val_labels = val_labels.to(device)
 
                         val_img, val_age_input = val_inputs
-                        val_outputs = model(val_img, val_age_input)
+                        val_outputs, _ = model(val_img, val_age_input)
 
                         # Compute loss based on the actual batch size
                         current_batch_size = val_img.size(0)
@@ -402,7 +428,7 @@ if __name__ == "__main__":
                 val_labels = val_labels.to(device)
                 
                 val_img, val_age_input = val_inputs
-                val_outputs = model(val_img, val_age_input)
+                val_outputs, _ = model(val_img, val_age_input)
                 val_loss += criterion(val_outputs, val_labels).item() * val_img.size(0)
                 total_val_samples += val_img.size(0)
 
