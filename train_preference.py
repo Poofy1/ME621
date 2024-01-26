@@ -127,29 +127,6 @@ class ME621_Model(nn.Module):
 
 
 
-def evaluate_model(model, val_dataloader):
-    model.eval()  # Set the model to evaluation mode
-
-    # Variables to store total absolute differences and counts
-    total_diff = np.zeros(3)  # Assuming there are 3 output variables
-    count = 0
-
-    with torch.no_grad():
-        for val_inputs, val_labels in val_dataloader:
-            val_inputs = tuple(input_tensor.to(device) for input_tensor in val_inputs)
-            val_labels = val_labels.to(device)
-
-            val_img, val_age_input = val_inputs
-            val_outputs, _ = model(val_img, val_age_input)
-
-            # Calculate the absolute difference
-            diff = torch.abs(val_outputs - val_labels)
-            total_diff += diff.sum(dim=0).cpu().numpy()
-            count += val_labels.size(0)
-
-    # Calculate the average absolute differences
-    avg_diff = total_diff / count
-    return avg_diff
 
 
 if __name__ == "__main__":
