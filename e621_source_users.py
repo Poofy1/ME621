@@ -11,26 +11,6 @@ def load_config():
         config = json.load(config_file)
         return config
     
-
-def fetch_with_retries(url, headers, max_retries=5, delay=5):
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 403:
-                return -1
-            else:
-                print(f"Error: Status code {response.status_code}, attempt {attempt + 1}")
-        except RequestException as e:
-            print(f"Request failed: {e}, attempt {attempt + 1}")
-            
-
-        time.sleep(delay)  # Wait before retrying
-
-    print("Max retries reached. Exiting.")
-    return None
-    
     
 def add_valid_column(csv_file, split=0.2):
     # Read the CSV file
@@ -50,6 +30,25 @@ def add_valid_column(csv_file, split=0.2):
     df.to_csv(csv_file, index=False)
     
     
+    
+def fetch_with_retries(url, headers, max_retries=5, delay=5):
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 403:
+                return -1
+            else:
+                print(f"Error: Status code {response.status_code}, attempt {attempt + 1}")
+        except RequestException as e:
+            print(f"Request failed: {e}, attempt {attempt + 1}")
+            
+
+        time.sleep(delay)  # Wait before retrying
+
+    print("Max retries reached. Exiting.")
+    return None
     
     
 def get_user_data(post, headers):
@@ -142,12 +141,12 @@ if __name__ == "__main__":
             writer.writerow(csv_headers)
     
     # Getting data
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         while pageID < ending_point:
             user_data = []
 
             print(f"Sourcing page a{pageID}")
-            url = f'https://e621.net/users.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=a{pageID}&limit=120'
+            url = f'https://e621.net/users.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=a{pageID}&limit=320'
             page = fetch_with_retries(url, headers)
             if page is None:
                 break 
@@ -184,6 +183,6 @@ if __name__ == "__main__":
             
             
     # Apply validation split
-    add_valid_column(source_dir, split = .025)
+    add_valid_column(source_dir, split = .1)
     
     print("Finished Operations")

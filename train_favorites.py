@@ -1,6 +1,7 @@
 import torch
-import os
+import os, ast
 import numpy as np
+import random
 import torch.nn as nn
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -8,10 +9,9 @@ from PIL import Image
 import torch.optim as optim
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from data.image_proc import *
 import torchvision.models as models
 from tqdm import tqdm
-from multiprocessing import Pool
 import warnings
 from torchinfo import summary
 
@@ -23,54 +23,118 @@ os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
 
 
-
-
-
 class ME621_Dataset(Dataset):
-    def __init__(self, image_paths, labels, age_values, transform=None):
+    def __init__(self, image_ids, image_paths, favorite_ids_list, transform=None):
+        self.image_ids = image_ids
         self.image_paths = image_paths
-        self.labels = labels
-        self.age_values = age_values
+        self.favorite_ids_list = favorite_ids_list
         self.transform = transform
+
+        self.current_list_index = 0  # Index to keep track of the current favorites list
+        self.current_favorites = set()
+        self.unused_favorites = set()
+        self.select_new_favorites()
+
+    def select_new_favorites(self):
+        if self.current_list_index < len(self.favorite_ids_list):
+            current_favorite_set = self.favorite_ids_list[self.current_list_index]
+            self.set_current_favorites(current_favorite_set)
+            self.current_list_index += 1  # Move to the next list
+        else:
+            self.current_list_index = 0  # Reset for the next epoch
+            self.select_new_favorites()
+
+        self.new_favorites_selected = True
+
+    def set_current_favorites(self, favorite_ids):
+        self.current_favorites = set(favorite_ids)
+        self.unused_favorites = set(favorite_ids)
+
+    def reset_new_favorites_flag(self):
+        self.new_favorites_selected = False
 
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, index):
-        img_path = self.image_paths[index]
+        if not self.unused_favorites:
+            self.select_new_favorites()
+
+        label = random.randint(0, 1)
+
+        if label == 1 and self.unused_favorites:
+            favorite_id = random.choice(list(self.unused_favorites))
+            self.unused_favorites.remove(favorite_id)
+            favorite_index = self.image_ids.index(favorite_id)
+            img_path = self.image_paths[favorite_index]
+        else:
+            non_favorites = [idx for idx, img_id in enumerate(self.image_ids) if img_id not in self.current_favorites]
+            random_index = random.choice(non_favorites)
+            img_path = self.image_paths[random_index]
+
         img = Image.open(img_path)
         img = self.transform(img)
 
-        age_input = torch.tensor([self.age_values[index]], dtype=torch.float32)
-        label = torch.tensor(self.labels[index], dtype=torch.float32)
-
-        return (img, age_input), label
+        return img, torch.tensor(label, dtype=torch.float32)
 
     
-    def unnormalize(self, tensor):
-        mean = [0.5, 0.5, 0.5]
-        std = [0.5, 0.5, 0.5]
-        unnormalized = tensor.clone()
-        for t, m, s in zip(unnormalized, mean, std):
-            t.mul_(s).add_(m)  # Undo the normalization
-        return unnormalized
     
-    def show_image(self, index):
-        img_path = self.image_paths[index]
-        img = Image.open(img_path).convert("RGB")
-
-        # Apply the transform
-        if self.transform:
-            img_transformed = self.transform(img)
-            img_transformed = self.unnormalize(img_transformed)  # Unnormalize
-            img_show = transforms.ToPILImage()(img_transformed.cpu()).convert("RGB")
-        else:
-            img_show = img
-
-        plt.imshow(img_show)
-        plt.title(f"Image at index {index}")
-        plt.pause(5) 
+def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
+    # Load the user dataset
+    user_csv = pd.read_csv(user_dir, usecols=['ID', 'favorites', 'Valid'])
     
+    # Convert 'favorites' from string representation of list to actual list
+    user_csv['favorites'] = user_csv['favorites'].apply(ast.literal_eval)
+
+    # Further filter out rows where 'favorites' has less than 5 items
+    user_csv = user_csv[user_csv['favorites'].map(len) >= 5]
+    
+    print(f'Found {len(user_csv)} unique user favorites')
+    
+    # Load the image dataset
+    image_df = pd.read_csv(data_csv, usecols=['ID', 'Created Date', 'Saved Date', 'Source Width', 'Source Height', 'Upvotes', 'Downvotes', 'Favorites', 'Valid'])
+    
+    # Preprocess images and update DataFrame
+    image_df = preprocess_and_save_images(image_df, image_dir, output_dir, image_size)
+
+    # Split into train and val sets
+    user_train = user_csv[user_csv['Valid'] == 0]
+    user_val = user_csv[user_csv['Valid'] == 1]
+
+    
+    # Extract labels for train and validation sets
+    train_labels = user_train['favorites'].values.tolist()
+    val_labels = user_val['favorites'].values.tolist()
+
+    # Create image paths and labels
+    image_ids = image_df['ID'].tolist()
+    image_paths = image_df['path'].tolist()
+    
+
+    # Define transforms
+    train_transform = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                ])
+    val_transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                ])
+
+
+    # Create datasets
+    train_dataset = ME621_Dataset(image_ids, image_paths, train_labels, transform=train_transform)
+    val_dataset = ME621_Dataset(image_ids, image_paths, val_labels, transform=val_transform)
+
+    
+    #train_dataset.show_image(0)
+    #train_dataset.show_image(1)
+    #train_dataset.show_image(2)
+    
+    return train_dataset, val_dataset
+
+
 
 
 class ME621_Model(nn.Module):
@@ -85,7 +149,7 @@ class ME621_Model(nn.Module):
         # FC layer to transform features for LSTM
         self.fc = nn.Sequential(
             nn.Linear(num_ftrs, num_ftrs),
-            nn.BatchNorm1d(num_ftrs),
+            nn.InstanceNorm1d(num_ftrs),
             nn.ReLU(),
             nn.Dropout(dropout_rate)
         )
@@ -98,11 +162,27 @@ class ME621_Model(nn.Module):
             batch_first=True,  # Assuming your input tensor to LSTM is of shape (batch, seq, feature)
             dropout=dropout_rate
         )
+        
+        # Initialize hidden state parameters
+        self.lstm_hidden_size = lstm_hidden_size
+        self.lstm_layers = lstm_layers
 
         # Output layer
         self.output_layer = nn.Linear(lstm_hidden_size, num_classes)
+        
+    def init_hidden(self, batch_size):
+        # Initialize hidden and cell states to zeros
+        # For LSTM, hidden state is a tuple of (hidden_state, cell_state)
+        hidden_state = torch.zeros(self.lstm_layers, batch_size, self.lstm_hidden_size).to(next(self.parameters()).device)
+        cell_state = torch.zeros(self.lstm_layers, batch_size, self.lstm_hidden_size).to(next(self.parameters()).device)
+        return (hidden_state, cell_state)
+        
 
-    def forward(self, x, hidden=None):
+    def forward(self, x, hidden=None, reset_state=False):
+        # Reset hidden state if required
+        if reset_state or hidden is None:
+            hidden = self.init_hidden(x.size(0))
+            
         # Process images through EfficientNet
         features = self.efficientnet.features(x)
         x = self.efficientnet.avgpool(features)
@@ -112,18 +192,16 @@ class ME621_Model(nn.Module):
         fc_out = self.fc(x)
 
         # Reshape for LSTM
-        # If you have a single image at a time, you might need to add a dimension: fc_out.unsqueeze(1)
         lstm_out, hidden = self.lstm(fc_out.unsqueeze(1), hidden)
 
         # LSTM output to final layer
-        # We take the output of the last time step
         lstm_out_last_step = lstm_out[:, -1, :]
 
         # Final output
-        out = torch.sigmoid(self.output_layer(lstm_out_last_step))
+        out = self.output_layer(lstm_out_last_step)
+        out = torch.sigmoid(out).squeeze(-1)
 
         return out, hidden 
-
 
 
 
@@ -132,20 +210,21 @@ class ME621_Model(nn.Module):
 if __name__ == "__main__":
     
     # Config
-    name = 'ME621_Score_2'
+    name = 'ME621_Fav_1'
     image_size = 350
     dropout_rate = 0.0
-    batch_size = 16
+    batch_size = 1
     epochs = 50
     check_interval = 10000
     raw_image_path = 'D:/DATA/E621/images/'
     ready_images_path = f'F:/Temp_SSD_Data/ME621/'
-    data_csv = 'D:/DATA/E621/source_images.csv'
+    image_csv = 'D:/DATA/E621/source_images.csv'
+    user_csv = 'D:/DATA/E621/source_users_testing.csv'
 
 
     # Load the dataset
     print('Preparing Dataset...')
-    train_dataset, val_dataset = create_datasets(raw_image_path, data_csv, ready_images_path, image_size)
+    train_dataset, val_dataset = create_datasets(raw_image_path, user_csv, image_csv, ready_images_path, image_size)
 
 
     # DataLoaders
@@ -154,8 +233,8 @@ if __name__ == "__main__":
 
     
     # Define model, loss function, and optimizer
-    model = ME621_Model(num_classes=3, dropout_rate=dropout_rate).to(device)
-    criterion = nn.MSELoss()
+    model = ME621_Model(num_classes=1, dropout_rate=dropout_rate).to(device)
+    criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     #summary(model, input_size=[(batch_size, 3, image_size, image_size), (batch_size, 1)])
     
@@ -173,11 +252,7 @@ if __name__ == "__main__":
         lowest_val_loss = checkpoint['val_loss']
         print(f"Model with val loss: {lowest_val_loss:.6f}, resuming from epoch {start_epoch}")
         
-        
-    # Evaluate the model
-    avg_diff = evaluate_model(model, val_dataloader)
-    print(f"Average Distance Off for Each Variable: {avg_diff}")
-        
+
     
     total_samples = len(train_dataloader.dataset)
     batch_size = train_dataloader.batch_size
@@ -190,15 +265,26 @@ if __name__ == "__main__":
         total_train_samples = 0
         batch_counter = 0
 
-        # Train loop
-        for inputs, labels in tqdm(train_dataloader):
-            inputs = tuple(input_tensor.to(device) for input_tensor in inputs)
-            labels = labels.to(device)
+        train_dataset.select_new_favorites()
 
-            img, age_input = inputs
-            outputs, _ = model(img, age_input)
-            #print(f"Age: {int(age_input[0].item())} Out: {outputs[0].detach().cpu().numpy().round().astype(int)}, True: {labels[0].cpu().numpy().round().astype(int)}")
-            loss = criterion(outputs, labels)
+
+        # Train loop
+        for img, label in tqdm(train_dataloader):
+            img = img.to(device)
+            label = label.to(device)
+
+            # Reset LSTM state and select new favorites at appropriate condition
+            if train_dataset.new_favorites_selected: 
+                hidden = model.init_hidden(batch_size)
+                train_dataset.select_new_favorites()  # Select new favorites set
+                priming_counter = 0
+
+            output, hidden = model(img, hidden, reset_state=train_dataset.new_favorites_selected)
+            
+            print(label)
+            print(output)
+
+            loss = criterion(output, label)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
