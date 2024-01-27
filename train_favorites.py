@@ -29,36 +29,40 @@ class ME621_Dataset(Dataset):
         self.image_paths = image_paths
         self.favorite_ids_list = favorite_ids_list
         self.transform = transform
-
         self.current_list_index = 0  # Index to keep track of the current favorites list
+        self.images_processed = 0  # Counter for images processed from the current list
         self.current_favorites = set()
         self.unused_favorites = set()
         self.select_new_favorites()
 
     def select_new_favorites(self):
+        # Reset the counter when a new list is selected
+        self.images_processed = 0
+
         if self.current_list_index < len(self.favorite_ids_list):
             current_favorite_set = self.favorite_ids_list[self.current_list_index]
             self.set_current_favorites(current_favorite_set)
-            self.current_list_index += 1  # Move to the next list
+            self.current_list_index += 1
         else:
-            self.current_list_index = 0  # Reset for the next epoch
+            self.current_list_index = 0
             self.select_new_favorites()
-
-        self.new_favorites_selected = True
+            
 
     def set_current_favorites(self, favorite_ids):
         self.current_favorites = set(favorite_ids)
         self.unused_favorites = set(favorite_ids)
 
-    def reset_new_favorites_flag(self):
-        self.new_favorites_selected = False
-
     def __len__(self):
-        return len(self.image_paths)
+        return sum(len(sublist) for sublist in self.favorite_ids_list)
 
     def __getitem__(self, index):
-        if not self.unused_favorites:
+        reset_set = False
+        if not self.unused_favorites or self.images_processed >= 100:
             self.select_new_favorites()
+            reset_set = True
+            
+        #print(self.images_processed)
+        #print(self.unused_favorites)
 
         label = random.randint(0, 1)
 
@@ -74,28 +78,36 @@ class ME621_Dataset(Dataset):
 
         img = Image.open(img_path)
         img = self.transform(img)
+        
+        # Increment the counter
+        self.images_processed += 1
 
-        return img, torch.tensor(label, dtype=torch.float32)
+        return img, torch.tensor(label, dtype=torch.float32), reset_set
 
     
     
 def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
+    # Load the image dataset
+    image_df = pd.read_csv(data_csv, usecols=['ID', 'Created Date', 'Saved Date', 'Source Width', 'Source Height', 'Upvotes', 'Downvotes', 'Favorites', 'Valid'])
+    
+    # Preprocess images and update DataFrame
+    image_df = preprocess_and_save_images(image_df, image_dir, output_dir, image_size)
+    
+    # Create a set of valid image IDs for efficient lookup
+    valid_image_ids = set(image_df['ID'].tolist())
+    
     # Load the user dataset
     user_csv = pd.read_csv(user_dir, usecols=['ID', 'favorites', 'Valid'])
     
     # Convert 'favorites' from string representation of list to actual list
     user_csv['favorites'] = user_csv['favorites'].apply(ast.literal_eval)
 
+    # Filter user favorites to only include valid image IDs
+    user_csv['favorites'] = user_csv['favorites'].apply(lambda favs: [fav for fav in favs if fav in valid_image_ids])
+
     # Further filter out rows where 'favorites' has less than 5 items
     user_csv = user_csv[user_csv['favorites'].map(len) >= 5]
-    
     print(f'Found {len(user_csv)} unique user favorites')
-    
-    # Load the image dataset
-    image_df = pd.read_csv(data_csv, usecols=['ID', 'Created Date', 'Saved Date', 'Source Width', 'Source Height', 'Upvotes', 'Downvotes', 'Favorites', 'Valid'])
-    
-    # Preprocess images and update DataFrame
-    image_df = preprocess_and_save_images(image_df, image_dir, output_dir, image_size)
 
     # Split into train and val sets
     user_train = user_csv[user_csv['Valid'] == 0]
@@ -109,6 +121,8 @@ def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
     # Create image paths and labels
     image_ids = image_df['ID'].tolist()
     image_paths = image_df['path'].tolist()
+    
+    
     
 
     # Define transforms
@@ -228,7 +242,7 @@ if __name__ == "__main__":
 
 
     # DataLoaders
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=1, pin_memory=True)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
     
@@ -266,24 +280,30 @@ if __name__ == "__main__":
         batch_counter = 0
 
         train_dataset.select_new_favorites()
+        
+        local_loss = 0
+        local_count = 0
+        
+        hidden_layer = None
 
 
         # Train loop
-        for img, label in tqdm(train_dataloader):
+        for img, label, reset_set in tqdm(train_dataloader):
             img = img.to(device)
             label = label.to(device)
 
             # Reset LSTM state and select new favorites at appropriate condition
-            if train_dataset.new_favorites_selected: 
-                hidden = model.init_hidden(batch_size)
-                train_dataset.select_new_favorites()  # Select new favorites set
-                priming_counter = 0
+            if reset_set: 
+                if local_count != 0:
+                    print(f'\nFavorite Set of {local_count}, Loss: {(local_loss/local_count):.3f}')
+                hidden_layer = model.init_hidden(batch_size)
+                local_count = 0
+                local_loss = 0
+                
 
-            output, hidden = model(img, hidden, reset_state=train_dataset.new_favorites_selected)
+            output, hidden_layer = model(img, hidden_layer, reset_state=reset_set)
+            hidden_layer = tuple([state.detach() for state in hidden_layer])
             
-            print(label)
-            print(output)
-
             loss = criterion(output, label)
             optimizer.zero_grad()
             loss.backward()
@@ -292,6 +312,8 @@ if __name__ == "__main__":
             train_loss += loss.item() * img.size(0)
             total_train_samples += img.size(0)
             batch_counter += 1
+            local_loss += loss.item()
+            local_count += 1
 
             # Perform validation check at specified interval
             if batch_counter % check_interval == 0:
