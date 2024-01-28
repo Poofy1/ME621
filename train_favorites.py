@@ -1,5 +1,5 @@
 import torch
-import os, ast
+import os, ast, sys
 import numpy as np
 import random
 import torch.nn as nn
@@ -22,70 +22,57 @@ torch.backends.cudnn.benchmark = False
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
 
-
 class ME621_Dataset(Dataset):
-    def __init__(self, image_ids, image_paths, favorite_ids_list, transform=None):
+    def __init__(self, image_ids, image_paths, favorite_ids_list, max_bag_size=100):
         self.image_ids = image_ids
         self.image_paths = image_paths
         self.favorite_ids_list = favorite_ids_list
-        self.transform = transform
-        self.current_list_index = 0  # Index to keep track of the current favorites list
-        self.images_processed = 0  # Counter for images processed from the current list
-        self.current_favorites = set()
-        self.unused_favorites = set()
-        self.select_new_favorites()
-
-    def select_new_favorites(self):
-        # Reset the counter when a new list is selected
-        self.images_processed = 0
-
-        if self.current_list_index < len(self.favorite_ids_list):
-            current_favorite_set = self.favorite_ids_list[self.current_list_index]
-            self.set_current_favorites(current_favorite_set)
-            self.current_list_index += 1
-        else:
-            self.current_list_index = 0
-            self.select_new_favorites()
-            
-
-    def set_current_favorites(self, favorite_ids):
-        self.current_favorites = set(favorite_ids)
-        self.unused_favorites = set(favorite_ids)
+        self.max_bag_size = max_bag_size
+        self.current_bag_index = 0  # To keep track of the current bag
 
     def __len__(self):
-        return sum(len(sublist) for sublist in self.favorite_ids_list)
+        return len(self.favorite_ids_list)
 
     def __getitem__(self, index):
-        reset_set = False
-        if not self.unused_favorites or self.images_processed >= 100:
-            self.select_new_favorites()
-            reset_set = True
-            
-        #print(self.images_processed)
-        #print(self.unused_favorites)
+        # Select a favorites list based on the current index
+        current_favorite_set = set(self.favorite_ids_list[self.current_bag_index])
 
-        label = random.randint(0, 1)
+        # Initialize list for bag image paths and labels
+        bag_img_paths = []
+        labels = []
 
-        if label == 1 and self.unused_favorites:
-            favorite_id = random.choice(list(self.unused_favorites))
-            self.unused_favorites.remove(favorite_id)
-            favorite_index = self.image_ids.index(favorite_id)
-            img_path = self.image_paths[favorite_index]
-        else:
-            non_favorites = [idx for idx, img_id in enumerate(self.image_ids) if img_id not in self.current_favorites]
-            random_index = random.choice(non_favorites)
-            img_path = self.image_paths[random_index]
+        # Fill the bag
+        while len(bag_img_paths) < self.max_bag_size and current_favorite_set:
+            if random.random() < 0.5:  # Assuming 50% chance for a favorite
+                favorite_id = current_favorite_set.pop()
+                favorite_index = self.image_ids.index(favorite_id)
+                img_path = self.image_paths[favorite_index]
+                bag_img_paths.append(img_path)  # Append path directly
+                labels.append(1)  # Label 1 for favorites
+            else:
+                # Select non-favorite avoiding any in the current favorite set
+                non_favorites = [img_id for img_id in self.image_ids if img_id not in current_favorite_set]
+                if non_favorites:
+                    non_favorite_id = random.choice(non_favorites)
+                    non_favorite_index = self.image_ids.index(non_favorite_id)
+                    img_path = self.image_paths[non_favorite_index]
+                    bag_img_paths.append(img_path)  # Append path directly
+                    labels.append(0)
 
-        img = Image.open(img_path)
-        img = self.transform(img)
-        
-        # Increment the counter
-        self.images_processed += 1
+        # Increment the bag index for the next call
+        self.current_bag_index += 1
 
-        return img, torch.tensor(label, dtype=torch.float32), reset_set
-
+        return bag_img_paths, labels
     
-    
+def custom_collate(batch):
+    img_list = []
+    label_list = []
+    for imgs, labels in batch:
+        img_list.extend(imgs)  # Concatenate all image paths
+        label_list.extend(labels)  # Concatenate all labels
+    return img_list, label_list
+
+
 def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
     # Load the image dataset
     image_df = pd.read_csv(data_csv, usecols=['ID', 'Created Date', 'Saved Date', 'Source Width', 'Source Height', 'Upvotes', 'Downvotes', 'Favorites', 'Valid'])
@@ -125,21 +112,12 @@ def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
     
     
 
-    # Define transforms
-    train_transform = transforms.Compose([
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-                ])
-    val_transform = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-                ])
+    
 
 
     # Create datasets
-    train_dataset = ME621_Dataset(image_ids, image_paths, train_labels, transform=train_transform)
-    val_dataset = ME621_Dataset(image_ids, image_paths, val_labels, transform=val_transform)
+    train_dataset = ME621_Dataset(image_ids, image_paths, train_labels)
+    val_dataset = ME621_Dataset(image_ids, image_paths, val_labels)
 
     
     #train_dataset.show_image(0)
@@ -192,11 +170,7 @@ class ME621_Model(nn.Module):
         return (hidden_state, cell_state)
         
 
-    def forward(self, x, hidden=None, reset_state=False):
-        # Reset hidden state if required
-        if reset_state or hidden is None:
-            hidden = self.init_hidden(x.size(0))
-            
+    def forward(self, x, hidden=None):
         # Process images through EfficientNet
         features = self.efficientnet.features(x)
         x = self.efficientnet.avgpool(features)
@@ -229,7 +203,7 @@ if __name__ == "__main__":
     dropout_rate = 0.0
     batch_size = 1
     epochs = 50
-    check_interval = 10000
+    check_interval = 1000
     raw_image_path = 'D:/DATA/E621/images/'
     ready_images_path = f'F:/Temp_SSD_Data/ME621/'
     image_csv = 'D:/DATA/E621/source_images.csv'
@@ -242,8 +216,8 @@ if __name__ == "__main__":
 
 
     # DataLoaders
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=1, pin_memory=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate, num_workers=2, pin_memory=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate, num_workers=2, pin_memory=True)
 
     
     # Define model, loss function, and optimizer
@@ -256,52 +230,57 @@ if __name__ == "__main__":
     # Continue Training?
     os.makedirs(f"{env}/models/", exist_ok=True)
     model_path = f"{env}/models/{name}.pt"
-    start_epoch = 0
+    iteration = 0
     lowest_val_loss = float('inf')
     if os.path.exists(model_path):
         checkpoint = torch.load(model_path)
         model.load_state_dict(checkpoint['model_state'])
         optimizer.load_state_dict(checkpoint['optimizer_state'])
-        start_epoch = checkpoint['epoch'] + 1  # Continue from the next epoch
+        iteration = checkpoint['iteration'] + 1  # Continue from the next epoch
         lowest_val_loss = checkpoint['val_loss']
-        print(f"Model with val loss: {lowest_val_loss:.6f}, resuming from epoch {start_epoch}")
+        print(f"Model with val loss: {lowest_val_loss:.6f}, resuming from epoch {iteration}")
         
+        
+    # Define transforms
+    train_transform = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                ])
+    val_transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                ])
 
     
-    total_samples = len(train_dataloader.dataset)
-    batch_size = train_dataloader.batch_size
-    total_batches = -(-total_samples // batch_size)
+    total_train_samples = len(train_dataloader)
+    total_val_samples = len(val_dataloader)
+    print(f'Total Train Samples: {total_train_samples}')
+    print(f'Total Val Samples: {total_val_samples}')
+
 
     print("Starting Training...")
-    for epoch in range(start_epoch, epochs):
-        model.train()
-        train_loss = 0
-        total_train_samples = 0
-        batch_counter = 0
+    model.train()
+    train_loss = 0
+    total_train_samples = 0
+    local_loss = 0
+    
 
-        train_dataset.select_new_favorites()
-        
-        local_loss = 0
+    # Train loop
+    for img_list, label_list in tqdm(train_dataloader):
         local_count = 0
-        
-        hidden_layer = None
+        local_loss = 0
+        hidden_layer = model.init_hidden(batch_size)
+
+        for img_path, label in zip(img_list, label_list):
+            
+            # Format Data
+            img = Image.open(img_path)
+            img = train_transform(img).to(device).unsqueeze(0)
+            label = torch.tensor([label], dtype=torch.float32).to(device)
 
 
-        # Train loop
-        for img, label, reset_set in tqdm(train_dataloader):
-            img = img.to(device)
-            label = label.to(device)
-
-            # Reset LSTM state and select new favorites at appropriate condition
-            if reset_set: 
-                if local_count != 0:
-                    print(f'\nFavorite Set of {local_count}, Loss: {(local_loss/local_count):.3f}')
-                hidden_layer = model.init_hidden(batch_size)
-                local_count = 0
-                local_loss = 0
-                
-
-            output, hidden_layer = model(img, hidden_layer, reset_state=reset_set)
+            output, hidden_layer = model(img, hidden_layer)
             hidden_layer = tuple([state.detach() for state in hidden_layer])
             
             loss = criterion(output, label)
@@ -311,64 +290,42 @@ if __name__ == "__main__":
 
             train_loss += loss.item() * img.size(0)
             total_train_samples += img.size(0)
-            batch_counter += 1
+        
             local_loss += loss.item()
             local_count += 1
+        
+        print(f'Set of {local_count}, Loss: {(local_loss/local_count):.3f}')
 
-            # Perform validation check at specified interval
-            if batch_counter % check_interval == 0:
-                model.eval()
-                val_loss = 0
-                total_val_samples = 0
 
-                with torch.no_grad():
-                    for val_inputs, val_labels in val_dataloader:
-                        val_inputs = tuple(input_tensor.to(device) for input_tensor in val_inputs)
-                        val_labels = val_labels.to(device)
 
-                        val_img, val_age_input = val_inputs
-                        val_outputs, _ = model(val_img, val_age_input)
 
-                        # Compute loss based on the actual batch size
-                        current_batch_size = val_img.size(0)
-                        val_loss += criterion(val_outputs, val_labels).item() * current_batch_size
-                        total_val_samples += current_batch_size
 
-                val_loss /= total_val_samples
-                print(f'\nEpoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
-                train_loss = 0
-                total_train_samples = 1
-                model.train()
 
-                if val_loss < lowest_val_loss:
-                    lowest_val_loss = val_loss
-                    state = {
-                        'epoch': epoch,
-                        'model_state': model.state_dict(),
-                        'optimizer_state': optimizer.state_dict(),
-                        'val_loss': lowest_val_loss
-                    }
-                    torch.save(state, f"{env}/models/{name}.pt")
-                    print(f"Saved Model")
-                    
-                
 
+
+
+
+
+
+
+    # Perform validation check at specified interval
+    if iteration % check_interval == 0:
         model.eval()
         val_loss = 0
         total_val_samples = 0
 
         with torch.no_grad():
-            for val_inputs, val_labels in val_dataloader:
-                val_inputs = tuple(input_tensor.to(device) for input_tensor in inputs)
-                val_labels = val_labels.to(device)
-                
-                val_img, val_age_input = val_inputs
-                val_outputs, _ = model(val_img, val_age_input)
-                val_loss += criterion(val_outputs, val_labels).item() * val_img.size(0)
+            for val_img, val_label, reset_set in val_dataloader:
+                val_img = val_img.to(device)
+                val_label = val_label.to(device)
+
+                val_output, hidden_layer = model(val_img, hidden_layer, reset_state=False)
+                batch_loss = criterion(val_output, val_label)
+                val_loss += batch_loss.item() * val_img.size(0)
                 total_val_samples += val_img.size(0)
 
         val_loss /= total_val_samples
-        print(f'\nEpoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
+        print(f'\Iteration: [{iteration}] [{int((iteration / total_train_samples) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
         train_loss = 0
         total_train_samples = 1
         model.train()
@@ -376,10 +333,12 @@ if __name__ == "__main__":
         if val_loss < lowest_val_loss:
             lowest_val_loss = val_loss
             state = {
-                'epoch': epoch,
+                'iteration': iteration,
                 'model_state': model.state_dict(),
                 'optimizer_state': optimizer.state_dict(),
                 'val_loss': lowest_val_loss
             }
             torch.save(state, f"{env}/models/{name}.pt")
             print(f"Saved Model")
+                
+                
