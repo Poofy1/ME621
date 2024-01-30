@@ -1,10 +1,9 @@
 import torch
-import os, ast, sys
+import os, ast
 import numpy as np
 import random
 import torch.nn as nn
 import pandas as pd
-import matplotlib.pyplot as plt
 from PIL import Image
 import torch.optim as optim
 import torchvision.transforms as transforms
@@ -67,12 +66,13 @@ class ME621_Dataset(Dataset):
 
         return bag_img_paths, labels
     
+    
 def custom_collate(batch):
     img_list = []
     label_list = []
     for imgs, labels in batch:
-        img_list.extend(imgs)  # Concatenate all image paths
-        label_list.extend(labels)  # Concatenate all labels
+        img_list.append(imgs)
+        label_list.append(labels)
     return img_list, label_list
 
 
@@ -111,12 +111,6 @@ def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
     # Create image paths and labels
     image_ids = image_df['ID'].tolist()
     image_paths = image_df['path'].tolist()
-    
-    
-    
-
-    
-
 
     # Create datasets
     train_dataset = ME621_Dataset(image_ids, image_paths, train_labels)
@@ -226,13 +220,16 @@ class ME621_Model(nn.Module):
         # Remove the original classifier from EfficientNet
         num_ftrs = self.efficientnet.classifier[1].in_features
         self.efficientnet.classifier = nn.Identity()
+        
+        # New layer to match feature size to embedding size
+        self.feature_transform = nn.Linear(num_ftrs, embedding_dim)
 
         # Preference Embedding
         self.preference_embedding = nn.Parameter(torch.zeros(embedding_dim))
 
         # Intermediate FC layer
         self.intermediate_fc = nn.Sequential(
-            nn.Linear(embedding_dim + num_ftrs, interpreter_fc_size),
+            nn.Linear(embedding_dim * 2, interpreter_fc_size),
             nn.ReLU(),
             nn.Dropout(dropout_rate)
         )
@@ -247,11 +244,14 @@ class ME621_Model(nn.Module):
         x = torch.flatten(x, 1)
 
 
-        # Make sure preference embedding is compatible for concatenation
-        preference_expanded = self.preference_embedding.unsqueeze(0).expand(x.size(0), -1)
+        # Transform the image features to match embedding size
+        x_transformed = self.feature_transform(x)
 
-        # Combine flattened image features with user's preference embedding
-        combined = torch.cat((preference_expanded, x), dim=1) 
+        # Make sure preference embedding is compatible for concatenation
+        preference_expanded = self.preference_embedding.unsqueeze(0).expand(x_transformed.size(0), -1)
+
+        # Combine transformed image features with user's preference embedding
+        combined = torch.cat((preference_expanded, x_transformed), dim=1) 
 
         # Pass the combined features through the intermediate FC layer
         intermediate_output = self.intermediate_fc(combined)
@@ -261,7 +261,7 @@ class ME621_Model(nn.Module):
 
         # Update preference embedding if required
         if image_label is not None:
-            self.update_preference_embedding(x, image_label)  # Use flattened features for update
+            self.update_preference_embedding(x_transformed, image_label)  # Use flattened features for update
 
         return prediction
     
@@ -273,14 +273,20 @@ class ME621_Model(nn.Module):
 
     def update_preference_embedding(self, image_features, image_label, alpha=0.1):
         """
-        Update the preference embedding based on the label of the image.
-        - image_features: extracted features of the current image
-        - image_label: the label of the image (1 for liked, 0 for not liked)
+        Update the preference embedding based on the labels of the images.
+        - image_features: extracted features of the current images (with batch size)
+        - image_label: the labels of the images (1 for liked, 0 for not liked)
         - alpha: learning rate for updating the embedding
         """
-        image_label_tensor = torch.tensor(image_label, dtype=torch.float32, device=self.preference_embedding.device)
-        update_direction = (2 * image_label_tensor - 1)  # will be 1 if liked, -1 if not liked
-        self.preference_embedding.data += alpha * update_direction * (image_features - self.preference_embedding.data)
+
+        # Calculate update direction (1 if liked, -1 if not liked)
+        update_direction = (2 * image_label - 1)
+
+        # Calculate the average update across the batch
+        average_update = alpha * (update_direction * (image_features - self.preference_embedding.data)).mean(dim=0)
+
+        # Apply the average update to the preference embedding
+        self.preference_embedding.data += average_update
 
 
 
@@ -292,7 +298,7 @@ if __name__ == "__main__":
     name = 'ME621_Fav_1'
     image_size = 350
     dropout_rate = 0.0
-    batch_size = 1
+    batch_size = 4
     epochs = 50
     check_interval = 100
     raw_image_path = 'D:/DATA/E621/images/'
@@ -307,15 +313,15 @@ if __name__ == "__main__":
 
 
     # DataLoaders
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=custom_collate, num_workers=2, pin_memory=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate, num_workers=2, pin_memory=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=custom_collate, num_workers=2, pin_memory=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, collate_fn=custom_collate, num_workers=2, pin_memory=True)
 
     
     # Define model, loss function, and optimizer
     model = ME621_Model(num_classes=1, dropout_rate=dropout_rate).to(device)
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    #summary(model, input_size=[(batch_size, 3, image_size, image_size), None])
+    #summary(model, input_size=[(batch_size, 3, image_size, image_size), (batch_size,)])
     
     
     # Continue Training?
@@ -351,7 +357,7 @@ if __name__ == "__main__":
     
     total_samples = len(train_dataloader.dataset)
     batch_size = train_dataloader.batch_size
-    total_batches = -(-total_samples // batch_size)
+    total_batches = -(-total_samples // 1)
 
 
     print("Starting Training...")
@@ -364,15 +370,32 @@ if __name__ == "__main__":
 
         # Train loop
         for img_list, label_list in tqdm(train_dataloader):
-
-            model.reset_preference_embedding()
-            seen_labels = 3
+            img_list = img_list[0]
+            label_list = label_list[0]
             
-            for img_path, label in zip(img_list, label_list):
-                # Format Data
-                img = Image.open(img_path)
-                img = train_transform(img).to(device).unsqueeze(0)
-                label = torch.tensor([label], dtype=torch.float32).to(device)
+            model.reset_preference_embedding()
+            seen_labels = 1
+            
+            # Process in mini-batches
+            for i in range(0, len(img_list), batch_size):
+                # Slice the img_list and label_list to get a mini-batch
+                mini_batch_img_list = img_list[i:i + batch_size]
+                mini_batch_label_list = label_list[i:i + batch_size]
+
+                # Process the mini-batch
+                batch_imgs = []
+                batch_labels = []
+                for img_path, label in zip(mini_batch_img_list, mini_batch_label_list):
+                    # Format Data
+                    img = Image.open(img_path)
+                    img = train_transform(img).unsqueeze(0)
+                    label = torch.tensor([label], dtype=torch.float32)
+                    batch_imgs.append(img)
+                    batch_labels.append(label)
+                
+                # Convert lists to tensors
+                batch_imgs = torch.cat(batch_imgs, dim=0).to(device) 
+                batch_labels = torch.cat(batch_labels, dim=0).to(device)
                 
                 if seen_labels > 0:
                     input_label = label
@@ -403,7 +426,7 @@ if __name__ == "__main__":
                     for val_img_list, val_label_list in val_dataloader:
                         
                         model.reset_preference_embedding()
-                        seen_labels = 3
+                        seen_labels = 5
                         
                         for img_path, label in zip(val_img_list, val_label_list):
                             # Format Data
