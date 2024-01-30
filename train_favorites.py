@@ -37,6 +37,9 @@ class ME621_Dataset(Dataset):
         # Select a favorites list based on the current index
         current_favorite_set = set(self.favorite_ids_list[self.current_bag_index])
 
+        # Find the maximum ID value in the current favorite list
+        max_favorite_id = max(current_favorite_set)
+
         # Initialize list for bag image paths and labels
         bag_img_paths = []
         labels = []
@@ -47,16 +50,16 @@ class ME621_Dataset(Dataset):
                 favorite_id = current_favorite_set.pop()
                 favorite_index = self.image_ids.index(favorite_id)
                 img_path = self.image_paths[favorite_index]
-                bag_img_paths.append(img_path)  # Append path directly
+                bag_img_paths.append(img_path)
                 labels.append(1)  # Label 1 for favorites
             else:
-                # Select non-favorite avoiding any in the current favorite set
-                non_favorites = [img_id for img_id in self.image_ids if img_id not in current_favorite_set]
+                # Select non-favorite avoiding any in the current favorite set and ensuring ID is less than max_favorite_id
+                non_favorites = [img_id for img_id in self.image_ids if img_id not in current_favorite_set and img_id < max_favorite_id]
                 if non_favorites:
                     non_favorite_id = random.choice(non_favorites)
                     non_favorite_index = self.image_ids.index(non_favorite_id)
                     img_path = self.image_paths[non_favorite_index]
-                    bag_img_paths.append(img_path)  # Append path directly
+                    bag_img_paths.append(img_path)
                     labels.append(0)
 
         # Increment the bag index for the next call
@@ -128,10 +131,9 @@ def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
 
 
 
-
-class ME621_Model(nn.Module):
-    def __init__(self, num_classes=1, dropout_rate=0.5, lstm_hidden_size=128, lstm_layers=1):
-        super(ME621_Model, self).__init__()
+class ME621_Model_LSTM(nn.Module):
+    def __init__(self, num_classes=1, dropout_rate=0.5, lstm_hidden_size=256, lstm_layers=2, interpreter_fc_size=128):
+        super(ME621_Model_LSTM, self).__init__()
         self.efficientnet = models.efficientnet_v2_s(weights='EfficientNet_V2_S_Weights.DEFAULT')
 
         # Remove the original classifier from EfficientNet
@@ -151,7 +153,7 @@ class ME621_Model(nn.Module):
             input_size=num_ftrs,
             hidden_size=lstm_hidden_size,
             num_layers=lstm_layers,
-            batch_first=True,  # Assuming your input tensor to LSTM is of shape (batch, seq, feature)
+            batch_first=True,
             dropout=dropout_rate
         )
         
@@ -159,37 +161,126 @@ class ME621_Model(nn.Module):
         self.lstm_hidden_size = lstm_hidden_size
         self.lstm_layers = lstm_layers
 
+        # Intermediate FC layer to interpret LSTM memory
+        self.interpreter_fc = nn.Sequential(
+            nn.Linear(lstm_hidden_size + num_ftrs, interpreter_fc_size), 
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+        
         # Output layer
-        self.output_layer = nn.Linear(lstm_hidden_size, num_classes)
+        self.output_layer = nn.Linear(interpreter_fc_size, num_classes)
         
     def init_hidden(self, batch_size):
         # Initialize hidden and cell states to zeros
-        # For LSTM, hidden state is a tuple of (hidden_state, cell_state)
         hidden_state = torch.zeros(self.lstm_layers, batch_size, self.lstm_hidden_size).to(next(self.parameters()).device)
         cell_state = torch.zeros(self.lstm_layers, batch_size, self.lstm_hidden_size).to(next(self.parameters()).device)
         return (hidden_state, cell_state)
-        
 
-    def forward(self, x, hidden=None):
+    def forward(self, x, ground_truth, hidden=None):
         # Process images through EfficientNet
         features = self.efficientnet.features(x)
         x = self.efficientnet.avgpool(features)
         x = torch.flatten(x, 1)
 
-        # Pass through FC layer
-        fc_out = self.fc(x)
+        # Incorporate the additional binary input
+        # Ensure the additional_input is in the right shape (batch_size, 1)
+        ground_truth = ground_truth.unsqueeze(1)
+        
+        # Concatenate the CNN output and the additional binary input
+        combined_input = torch.cat([x, ground_truth], dim=1)
+
+        # Pass the combined input through the FC layer
+        # Modify the input size of the first layer of self.fc to match the new combined_input size
+        fc_out = self.fc(combined_input)
 
         # Reshape for LSTM
         lstm_out, hidden = self.lstm(fc_out.unsqueeze(1), hidden)
 
-        # LSTM output to final layer
+        # LSTM output to interpreter FC layer
         lstm_out_last_step = lstm_out[:, -1, :]
+        
+        # Concatenate LSTM output and FC output
+        combined_out = torch.cat((lstm_out_last_step, fc_out), dim=1)
+
+        # Pass the concatenated output to the interpreter FC layer
+        interpreter_out = self.interpreter_fc(combined_out)
 
         # Final output
-        out = self.output_layer(lstm_out_last_step)
+        out = self.output_layer(interpreter_out)
         out = torch.sigmoid(out).squeeze(-1)
 
-        return out, hidden 
+        return out, hidden
+
+
+
+
+
+class ME621_Model(nn.Module):
+    def __init__(self, num_classes=1, dropout_rate=0.5, embedding_dim=512, interpreter_fc_size=128):
+        super(ME621_Model, self).__init__()
+
+        # CNN feature extractor
+        self.efficientnet = models.efficientnet_v2_s(weights='EfficientNet_V2_S_Weights.DEFAULT')
+        
+        # Remove the original classifier from EfficientNet
+        num_ftrs = self.efficientnet.classifier[1].in_features
+        self.efficientnet.classifier = nn.Identity()
+
+        # Preference Embedding
+        self.preference_embedding = nn.Parameter(torch.zeros(embedding_dim))
+
+        # Intermediate FC layer
+        self.intermediate_fc = nn.Sequential(
+            nn.Linear(embedding_dim + num_ftrs, interpreter_fc_size),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate)
+        )
+
+        # Prediction Layer
+        self.prediction_layer = nn.Linear(interpreter_fc_size, num_classes)
+
+    def forward(self, image, image_label=None):
+        # Extract features from the image using the CNN
+        image_features = self.efficientnet.features(image)
+        x = self.efficientnet.avgpool(image_features)
+        x = torch.flatten(x, 1)
+
+
+        # Make sure preference embedding is compatible for concatenation
+        preference_expanded = self.preference_embedding.unsqueeze(0).expand(x.size(0), -1)
+
+        # Combine flattened image features with user's preference embedding
+        combined = torch.cat((preference_expanded, x), dim=1) 
+
+        # Pass the combined features through the intermediate FC layer
+        intermediate_output = self.intermediate_fc(combined)
+
+        # Predict and return the likelihood of the user liking the image
+        prediction = torch.sigmoid(self.prediction_layer(intermediate_output)).squeeze(-1)
+
+        # Update preference embedding if required
+        if image_label is not None:
+            self.update_preference_embedding(x, image_label)  # Use flattened features for update
+
+        return prediction
+    
+    def reset_preference_embedding(self):
+        """
+        Reset the preference embedding to its initial state (e.g., all zeros).
+        """
+        self.preference_embedding.data.fill_(0.0)
+
+    def update_preference_embedding(self, image_features, image_label, alpha=0.1):
+        """
+        Update the preference embedding based on the label of the image.
+        - image_features: extracted features of the current image
+        - image_label: the label of the image (1 for liked, 0 for not liked)
+        - alpha: learning rate for updating the embedding
+        """
+        image_label_tensor = torch.tensor(image_label, dtype=torch.float32, device=self.preference_embedding.device)
+        update_direction = (2 * image_label_tensor - 1)  # will be 1 if liked, -1 if not liked
+        self.preference_embedding.data += alpha * update_direction * (image_features - self.preference_embedding.data)
 
 
 
@@ -203,7 +294,7 @@ if __name__ == "__main__":
     dropout_rate = 0.0
     batch_size = 1
     epochs = 50
-    check_interval = 1000
+    check_interval = 100
     raw_image_path = 'D:/DATA/E621/images/'
     ready_images_path = f'F:/Temp_SSD_Data/ME621/'
     image_csv = 'D:/DATA/E621/source_images.csv'
@@ -224,21 +315,21 @@ if __name__ == "__main__":
     model = ME621_Model(num_classes=1, dropout_rate=dropout_rate).to(device)
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    #summary(model, input_size=[(batch_size, 3, image_size, image_size), (batch_size, 1)])
+    #summary(model, input_size=[(batch_size, 3, image_size, image_size), None])
     
     
     # Continue Training?
     os.makedirs(f"{env}/models/", exist_ok=True)
     model_path = f"{env}/models/{name}.pt"
-    iteration = 0
+    start_epoch = 0
     lowest_val_loss = float('inf')
     if os.path.exists(model_path):
         checkpoint = torch.load(model_path)
         model.load_state_dict(checkpoint['model_state'])
         optimizer.load_state_dict(checkpoint['optimizer_state'])
-        iteration = checkpoint['iteration'] + 1  # Continue from the next epoch
+        start_epoch = checkpoint['epoch'] + 1  # Continue from the next epoch
         lowest_val_loss = checkpoint['val_loss']
-        print(f"Model with val loss: {lowest_val_loss:.6f}, resuming from epoch {iteration}")
+        print(f"Model with val loss: {lowest_val_loss:.6f}, resuming from epoch {start_epoch}")
         
         
     # Define transforms
@@ -257,88 +348,98 @@ if __name__ == "__main__":
     total_val_samples = len(val_dataloader)
     print(f'Total Train Samples: {total_train_samples}')
     print(f'Total Val Samples: {total_val_samples}')
+    
+    total_samples = len(train_dataloader.dataset)
+    batch_size = train_dataloader.batch_size
+    total_batches = -(-total_samples // batch_size)
 
 
     print("Starting Training...")
-    model.train()
-    train_loss = 0
-    total_train_samples = 0
-    local_loss = 0
-    
-
-    # Train loop
-    for img_list, label_list in tqdm(train_dataloader):
-        local_count = 0
-        local_loss = 0
-        hidden_layer = model.init_hidden(batch_size)
-
-        for img_path, label in zip(img_list, label_list):
-            
-            # Format Data
-            img = Image.open(img_path)
-            img = train_transform(img).to(device).unsqueeze(0)
-            label = torch.tensor([label], dtype=torch.float32).to(device)
-
-
-            output, hidden_layer = model(img, hidden_layer)
-            hidden_layer = tuple([state.detach() for state in hidden_layer])
-            
-            loss = criterion(output, label)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            train_loss += loss.item() * img.size(0)
-            total_train_samples += img.size(0)
-        
-            local_loss += loss.item()
-            local_count += 1
-        
-        print(f'Set of {local_count}, Loss: {(local_loss/local_count):.3f}')
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # Perform validation check at specified interval
-    if iteration % check_interval == 0:
-        model.eval()
-        val_loss = 0
-        total_val_samples = 0
-
-        with torch.no_grad():
-            for val_img, val_label, reset_set in val_dataloader:
-                val_img = val_img.to(device)
-                val_label = val_label.to(device)
-
-                val_output, hidden_layer = model(val_img, hidden_layer, reset_state=False)
-                batch_loss = criterion(val_output, val_label)
-                val_loss += batch_loss.item() * val_img.size(0)
-                total_val_samples += val_img.size(0)
-
-        val_loss /= total_val_samples
-        print(f'\Iteration: [{iteration}] [{int((iteration / total_train_samples) * 100)}%] | Train Loss: {train_loss / total_train_samples:.3f} | Val Loss: {val_loss:.3f}')
-        train_loss = 0
-        total_train_samples = 1
+    for epoch in range(start_epoch, epochs):
         model.train()
+        train_loss = 0
+        total_train_samples = 0
+        batch_counter = 0
+        
 
-        if val_loss < lowest_val_loss:
-            lowest_val_loss = val_loss
-            state = {
-                'iteration': iteration,
-                'model_state': model.state_dict(),
-                'optimizer_state': optimizer.state_dict(),
-                'val_loss': lowest_val_loss
-            }
-            torch.save(state, f"{env}/models/{name}.pt")
-            print(f"Saved Model")
+        # Train loop
+        for img_list, label_list in tqdm(train_dataloader):
+
+            model.reset_preference_embedding()
+            seen_labels = 3
+            
+            for img_path, label in zip(img_list, label_list):
+                # Format Data
+                img = Image.open(img_path)
+                img = train_transform(img).to(device).unsqueeze(0)
+                label = torch.tensor([label], dtype=torch.float32).to(device)
                 
+                if seen_labels > 0:
+                    input_label = label
+                else:
+                    input_label = None
+
+                output = model(img, input_label)
                 
+                loss = criterion(output, label)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                train_loss += loss.item() * img.size(0)
+                total_train_samples += img.size(0)
+                seen_labels -= 1
+
+            batch_counter += 1
+
+
+            # Perform validation check at specified interval
+            if batch_counter % check_interval == 0:
+                model.eval()
+                val_loss = 0
+                total_val_samples = 0
+
+                with torch.no_grad():
+                    for val_img_list, val_label_list in val_dataloader:
+                        
+                        model.reset_preference_embedding()
+                        seen_labels = 3
+                        
+                        for img_path, label in zip(val_img_list, val_label_list):
+                            # Format Data
+                            img = Image.open(img_path)
+                            img = train_transform(img).to(device).unsqueeze(0)
+                            label = torch.tensor([label], dtype=torch.float32).to(device)
+
+                            if seen_labels > 0:
+                                input_label = label
+                            else:
+                                input_label = None
+                    
+                            output = model(img, input_label)
+
+                            loss = criterion(output, label)
+
+                            val_loss += loss.item() * img.size(0)
+                            total_val_samples += img.size(0)
+                            
+                            seen_labels -= 1
+
+                val_loss /= total_val_samples
+                print(f'\nEpoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.5f} | Val Loss: {val_loss:.5f}')
+                train_loss = 0
+                total_train_samples = 1
+                model.train()
+
+                if val_loss < lowest_val_loss:
+                    lowest_val_loss = val_loss
+                    state = {
+                        'epoch': epoch,
+                        'model_state': model.state_dict(),
+                        'optimizer_state': optimizer.state_dict(),
+                        'val_loss': lowest_val_loss
+                    }
+                    torch.save(state, f"{env}/models/{name}.pt")
+                    print(f"Saved Model")
+                    
+                    

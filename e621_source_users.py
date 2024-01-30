@@ -12,22 +12,23 @@ def load_config():
         return config
     
     
-def add_valid_column(csv_file, split=0.2):
+def add_valid_column(csv_file, num_valid_rows):
     # Read the CSV file
     df = pd.read_csv(csv_file)
 
     # Initialize all rows in 'Valid' column as 0
     df['Valid'] = 0
 
-    # Determine the number of rows to mark as valid
-    num_valid = int(len(df) * split)
+    # Ensure num_valid_rows does not exceed the number of rows in the dataframe
+    num_valid_rows = min(num_valid_rows, len(df))
 
     # Randomly select rows and set them to 1
-    valid_indices = np.random.choice(df.index, num_valid, replace=False)
+    valid_indices = np.random.choice(df.index, num_valid_rows, replace=False)
     df.loc[valid_indices, 'Valid'] = 1
 
     # Save the updated dataframe
     df.to_csv(csv_file, index=False)
+
     
     
     
@@ -179,10 +180,10 @@ if __name__ == "__main__":
             with open(source_dir, 'a', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 writer.writerows(user_data)
-            
+
             
             
     # Apply validation split
-    add_valid_column(source_dir, split = .1)
+    add_valid_column(source_dir, num_valid_rows = 50)
     
     print("Finished Operations")
