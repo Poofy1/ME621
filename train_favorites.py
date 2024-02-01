@@ -154,6 +154,18 @@ class ME621_Model(nn.Module):
 
         # Prediction Layer
         self.prediction_layer = nn.Linear(interpreter_fc_size, num_classes)
+        
+    def freeze_prediction_layer(self):
+        for param in self.prediction_layer.parameters():
+            param.requires_grad = False
+
+    def unfreeze_prediction_layer(self):
+        for param in self.prediction_layer.parameters():
+            param.requires_grad = True
+            
+    def reset_preference_embedding(self):
+        #Reset the preference embedding to its initial state (e.g., all zeros).
+        self.preference_embedding.data.fill_(0.0)
 
     def forward(self, image, mode='prediction'):
         # Extract features from the image using the CNN
@@ -163,8 +175,12 @@ class ME621_Model(nn.Module):
 
         # Transform the image features to match embedding size
         x_transformed = self.feature_transform(x)
+        # normalize features
+        x_transformed = x_transformed / x_transformed.norm(dim=1, keepdim=True)
 
         if mode == 'siamese':
+            self.freeze_prediction_layer()
+            
             # Assuming images come in pairs: [neg, pos, neg, pos, ...]
             neg_features = x_transformed[0::2]  # Negative features
             pos_features = x_transformed[1::2]  # Positive features
@@ -175,6 +191,8 @@ class ME621_Model(nn.Module):
             return neg_features, pos_features
 
         elif mode == 'prediction':
+            self.unfreeze_prediction_layer()
+            
             # Combine transformed image features with user's preference embedding
             preference_expanded = self.preference_embedding.unsqueeze(0).expand(x_transformed.size(0), -1)
             combined = torch.cat((preference_expanded, x_transformed), dim=1) 
@@ -187,11 +205,7 @@ class ME621_Model(nn.Module):
 
             return prediction
     
-    def reset_preference_embedding(self):
-        """
-        Reset the preference embedding to its initial state (e.g., all zeros).
-        """
-        self.preference_embedding.data.fill_(0.0)
+    
 
     def update_preference_embedding(self, pos_image_features, neg_image_features, alpha=0.01):
         """
@@ -210,8 +224,7 @@ class ME621_Model(nn.Module):
         neg_update = alpha * (neg_update_direction * (neg_image_features - self.preference_embedding))
 
         # Combine updates and apply to the preference embedding
-        total_update = pos_update + neg_update
-        self.preference_embedding.data += total_update
+        self.preference_embedding.data += (pos_update + neg_update).sum(dim=0)
 
         # Normalize the preference embedding
         norm = self.preference_embedding.data.norm(p=2, dim=0, keepdim=True)
@@ -245,12 +258,40 @@ def contrastive_loss(neg_features, pos_features, margin=1.0):
     return combined_loss.mean()
 
 
+class LossMetrics:
+    def __init__(self):
+        self.reset()
 
-def val_check(model, total_train_samples, total_train_correct):
+    def reset(self):
+        self.cumulative_loss = 0.0
+        self.total_samples = 0
+        self.total_correct = 0
+
+    def update(self, loss, outputs, labels):
+        # Determine batch size
+        batch_size = outputs.size(0) if outputs is not None else len(labels)
+
+        self.cumulative_loss += loss.item() * batch_size
+        self.total_samples += batch_size
+
+        # Update accuracy only if outputs and labels are provided
+        if outputs is not None and labels is not None:
+            predicted_labels = (outputs > 0.5).float()
+            self.total_correct += (predicted_labels == labels).sum().item()
+
+
+    def average_loss(self):
+        return self.cumulative_loss / self.total_samples if self.total_samples > 0 else 0
+
+    def accuracy(self):
+        return self.total_correct / self.total_samples if self.total_samples > 0 else 0
+    
+    
+
+def val_check(model, train_siamese_metrics, train_pred_metrics):
     model.eval()
-    val_loss = 0
-    total_val_samples = 0
-    total_val_correct = 0
+    val_siamese_metrics = LossMetrics()
+    val_pred_metrics = LossMetrics()
 
     with torch.no_grad():
         for val_img_list, val_label_list in val_dataloader:
@@ -260,10 +301,10 @@ def val_check(model, total_train_samples, total_train_correct):
             
             # Select a random number for siamese mode
             siamese_size = random.randint(4, 8) * 2
-            siamese_imgs = val_img_list[0][:siamese_size]
-            siamese_labels = val_label_list[0][:siamese_size]
-            pred_imgs = val_img_list[0][siamese_size:]
-            pred_labels = val_label_list[0][siamese_size:]
+            siamese_imgs = val_img_list[:siamese_size]
+            siamese_labels = val_label_list[:siamese_size]
+            pred_imgs = val_img_list[siamese_size:]
+            pred_labels = val_label_list[siamese_size:]
             
             # Siamese Phase
 
@@ -284,9 +325,8 @@ def val_check(model, total_train_samples, total_train_correct):
                 neg_features, pos_features = model(batch_imgs, mode='siamese')
                 loss = contrastive_loss(neg_features, pos_features)
 
-                # Update training statistics
-                val_loss += loss.item() * batch_imgs.size(0)
-                total_val_samples += batch_imgs.size(0)
+                # Update val statistics
+                val_siamese_metrics.update(loss, None, batch_labels)
             
             # Pred Phase
             
@@ -307,17 +347,22 @@ def val_check(model, total_train_samples, total_train_correct):
                 output = model(batch_imgs, mode='prediction')
                 loss = criterion(output, batch_labels)
                 
-                # Update training statistics
-                val_loss += loss.item() * batch_imgs.size(0)
-                total_val_samples += batch_imgs.size(0)
+                # Update val statistics
+                val_pred_metrics.update(loss, output, batch_labels)
 
-    val_loss /= total_val_samples
-    train_accuracy = total_train_correct / total_train_samples
-    val_accuracy = total_val_correct / total_val_samples
 
-    print(f'\nEpoch: [{epoch}] | Train Loss: {train_loss / total_train_samples:.5f} | Train Acc: {train_accuracy:.5f} | Val Loss: {val_loss:.5f} | Val Acc: {val_accuracy:.5f}')
+    # Prepare values for printing
+    train_siamese_loss = train_siamese_metrics.average_loss()
+    train_pred_loss = train_pred_metrics.average_loss()
+    train_accuracy = train_pred_metrics.accuracy()
+    val_siamese_loss = val_siamese_metrics.average_loss()
+    val_pred_loss = val_pred_metrics.average_loss()
+    val_accuracy = val_pred_metrics.accuracy()
 
-    return val_loss
+    # Print metrics
+    print(f'nEpoch: {epoch} \nTS Loss: {train_siamese_loss:.5f} | TP Loss : {train_pred_loss:.5f} | T Acc: {train_accuracy:.5f} \nVS Loss: {val_siamese_loss:.5f} | VP Loss: {val_pred_loss:.5f} | V Acc: {val_accuracy:.5f}')
+
+    return val_pred_loss
     
         
 
@@ -328,9 +373,9 @@ if __name__ == "__main__":
     name = 'ME621_Fav_1'
     image_size = 350
     dropout_rate = 0.0
-    batch_size = 8
+    batch_size = 16
     epochs = 50
-    check_interval = 100
+    check_interval = 25
     raw_image_path = 'D:/DATA/E621/images/'
     ready_images_path = f'F:/Temp_SSD_Data/ME621/'
     image_csv = 'D:/DATA/E621/source_images.csv'
@@ -391,9 +436,9 @@ if __name__ == "__main__":
     print("Starting Training...")
     for epoch in range(start_epoch, epochs):
         model.train()
-        train_loss = 0
-        total_train_samples = 0
-        total_train_correct = 0
+        train_siamese_metrics = LossMetrics()
+        train_pred_metrics = LossMetrics()
+        
         
         batch_counter = 0
         
@@ -406,10 +451,10 @@ if __name__ == "__main__":
             
             # Select a random number for siamese mode
             siamese_size = random.randint(4, 8) * 2
-            siamese_imgs = img_list[0][:siamese_size]
-            siamese_labels = label_list[0][:siamese_size]
-            pred_imgs = img_list[0][siamese_size:]
-            pred_labels = label_list[0][siamese_size:]
+            siamese_imgs = img_list[:siamese_size]
+            siamese_labels = label_list[:siamese_size]
+            pred_imgs = img_list[siamese_size:]
+            pred_labels = label_list[siamese_size:]
             
             # Siamese Phase
 
@@ -434,11 +479,12 @@ if __name__ == "__main__":
                 optimizer.step()
 
                 # Update training statistics
-                train_loss += loss.item() * batch_imgs.size(0)
-                total_train_samples += batch_imgs.size(0)
+                train_siamese_metrics.update(loss, None, batch_labels)  # No accuracy calculation for siamese phase
             
             # Pred Phase
             
+            total_train_samples = 0
+            total_train_correct = 0
             for i in range(0, len(pred_imgs), batch_size):
                 # Get mini-batch
                 mini_batch_img_list = pred_imgs[i:i + batch_size]
@@ -460,10 +506,8 @@ if __name__ == "__main__":
                 optimizer.step()
 
                 # Update training statistics
-                train_loss += loss.item() * batch_imgs.size(0)
-                total_train_samples += batch_imgs.size(0)
-                
-                
+                train_pred_metrics.update(loss, output, batch_labels)
+
                 
                 
                 
@@ -474,7 +518,7 @@ if __name__ == "__main__":
 
             # Perform validation check at specified interval
             if batch_counter % check_interval == 0:
-                val_loss = val_check(model, total_train_samples, total_train_correct)
+                val_loss = val_check(model, train_siamese_metrics, train_pred_metrics)
                 model.train()
                 total_train_correct = 0
                 train_loss = 0
