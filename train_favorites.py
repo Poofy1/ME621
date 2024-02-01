@@ -19,15 +19,15 @@ env = os.path.dirname(os.path.abspath(__file__))
 warnings.filterwarnings("ignore", category=UserWarning, module="PIL")
 torch.backends.cudnn.benchmark = False
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
-
-
+    
+    
 class ME621_Dataset(Dataset):
     def __init__(self, image_ids, image_paths, favorite_ids_list, max_bag_size=100):
         self.image_ids = image_ids
         self.image_paths = image_paths
         self.favorite_ids_list = favorite_ids_list
         self.max_bag_size = max_bag_size
-        self.current_bag_index = 0  # To keep track of the current bag
+        self.current_bag_index = 0
 
     def __len__(self):
         return len(self.favorite_ids_list)
@@ -43,29 +43,28 @@ class ME621_Dataset(Dataset):
         bag_img_paths = []
         labels = []
 
-        # Fill the bag
+        # Fill the bag with alternating negative and positive images
         while len(bag_img_paths) < self.max_bag_size and current_favorite_set:
-            if random.random() < 0.5:  # Assuming 50% chance for a favorite
+            # Add a negative image (not in the current favorite set)
+            non_favorites = [img_id for img_id in self.image_ids if img_id not in current_favorite_set and img_id < max_favorite_id]
+            if non_favorites:
+                non_favorite_id = random.choice(non_favorites)
+                non_favorite_index = self.image_ids.index(non_favorite_id)
+                img_path = self.image_paths[non_favorite_index]
+                bag_img_paths.append(img_path)
+                labels.append(0)  # Label 0 for non-favorites
+
+                # Add a positive image (from the current favorite set)
                 favorite_id = current_favorite_set.pop()
                 favorite_index = self.image_ids.index(favorite_id)
                 img_path = self.image_paths[favorite_index]
                 bag_img_paths.append(img_path)
                 labels.append(1)  # Label 1 for favorites
-            else:
-                # Select non-favorite avoiding any in the current favorite set and ensuring ID is less than max_favorite_id
-                non_favorites = [img_id for img_id in self.image_ids if img_id not in current_favorite_set and img_id < max_favorite_id]
-                if non_favorites:
-                    non_favorite_id = random.choice(non_favorites)
-                    non_favorite_index = self.image_ids.index(non_favorite_id)
-                    img_path = self.image_paths[non_favorite_index]
-                    bag_img_paths.append(img_path)
-                    labels.append(0)
 
         # Increment the bag index for the next call
-        self.current_bag_index += 1
+        self.current_bag_index = (self.current_bag_index + 1) % len(self.favorite_ids_list)
 
         return bag_img_paths, labels
-    
     
 def custom_collate(batch):
     img_list = []
@@ -95,8 +94,8 @@ def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
     # Filter user favorites to only include valid image IDs
     user_csv['favorites'] = user_csv['favorites'].apply(lambda favs: [fav for fav in favs if fav in valid_image_ids])
 
-    # Further filter out rows where 'favorites' has less than 5 items
-    user_csv = user_csv[user_csv['favorites'].map(len) >= 5]
+    # Further filter out rows where 'favorites' has less than x items
+    user_csv = user_csv[user_csv['favorites'].map(len) >= 16]
     print(f'Found {len(user_csv)} unique user favorites')
 
     # Split into train and val sets
@@ -111,6 +110,9 @@ def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
     # Create image paths and labels
     image_ids = image_df['ID'].tolist()
     image_paths = image_df['path'].tolist()
+    
+    #train_labels = [train_labels[0]]
+    #train_labels = [val_labels[0]]
 
     # Create datasets
     train_dataset = ME621_Dataset(image_ids, image_paths, train_labels)
@@ -125,88 +127,6 @@ def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
 
 
 
-class ME621_Model_LSTM(nn.Module):
-    def __init__(self, num_classes=1, dropout_rate=0.5, lstm_hidden_size=256, lstm_layers=2, interpreter_fc_size=128):
-        super(ME621_Model_LSTM, self).__init__()
-        self.efficientnet = models.efficientnet_v2_s(weights='EfficientNet_V2_S_Weights.DEFAULT')
-
-        # Remove the original classifier from EfficientNet
-        num_ftrs = self.efficientnet.classifier[1].in_features
-        self.efficientnet.classifier = nn.Identity()
-
-        # FC layer to transform features for LSTM
-        self.fc = nn.Sequential(
-            nn.Linear(num_ftrs, num_ftrs),
-            nn.InstanceNorm1d(num_ftrs),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate)
-        )
-
-        # LSTM layer
-        self.lstm = nn.LSTM(
-            input_size=num_ftrs,
-            hidden_size=lstm_hidden_size,
-            num_layers=lstm_layers,
-            batch_first=True,
-            dropout=dropout_rate
-        )
-        
-        # Initialize hidden state parameters
-        self.lstm_hidden_size = lstm_hidden_size
-        self.lstm_layers = lstm_layers
-
-        # Intermediate FC layer to interpret LSTM memory
-        self.interpreter_fc = nn.Sequential(
-            nn.Linear(lstm_hidden_size + num_ftrs, interpreter_fc_size), 
-            nn.ReLU(),
-            nn.Dropout(dropout_rate)
-        )
-        
-        # Output layer
-        self.output_layer = nn.Linear(interpreter_fc_size, num_classes)
-        
-    def init_hidden(self, batch_size):
-        # Initialize hidden and cell states to zeros
-        hidden_state = torch.zeros(self.lstm_layers, batch_size, self.lstm_hidden_size).to(next(self.parameters()).device)
-        cell_state = torch.zeros(self.lstm_layers, batch_size, self.lstm_hidden_size).to(next(self.parameters()).device)
-        return (hidden_state, cell_state)
-
-    def forward(self, x, ground_truth, hidden=None):
-        # Process images through EfficientNet
-        features = self.efficientnet.features(x)
-        x = self.efficientnet.avgpool(features)
-        x = torch.flatten(x, 1)
-
-        # Incorporate the additional binary input
-        # Ensure the additional_input is in the right shape (batch_size, 1)
-        ground_truth = ground_truth.unsqueeze(1)
-        
-        # Concatenate the CNN output and the additional binary input
-        combined_input = torch.cat([x, ground_truth], dim=1)
-
-        # Pass the combined input through the FC layer
-        # Modify the input size of the first layer of self.fc to match the new combined_input size
-        fc_out = self.fc(combined_input)
-
-        # Reshape for LSTM
-        lstm_out, hidden = self.lstm(fc_out.unsqueeze(1), hidden)
-
-        # LSTM output to interpreter FC layer
-        lstm_out_last_step = lstm_out[:, -1, :]
-        
-        # Concatenate LSTM output and FC output
-        combined_out = torch.cat((lstm_out_last_step, fc_out), dim=1)
-
-        # Pass the concatenated output to the interpreter FC layer
-        interpreter_out = self.interpreter_fc(combined_out)
-
-        # Final output
-        out = self.output_layer(interpreter_out)
-        out = torch.sigmoid(out).squeeze(-1)
-
-        return out, hidden
-
-
 
 
 
@@ -216,8 +136,6 @@ class ME621_Model(nn.Module):
 
         # CNN feature extractor
         self.efficientnet = models.efficientnet_v2_s(weights='EfficientNet_V2_S_Weights.DEFAULT')
-        
-        # Remove the original classifier from EfficientNet
         num_ftrs = self.efficientnet.classifier[1].in_features
         self.efficientnet.classifier = nn.Identity()
         
@@ -237,33 +155,37 @@ class ME621_Model(nn.Module):
         # Prediction Layer
         self.prediction_layer = nn.Linear(interpreter_fc_size, num_classes)
 
-    def forward(self, image, image_label=None):
+    def forward(self, image, mode='prediction'):
         # Extract features from the image using the CNN
         image_features = self.efficientnet.features(image)
         x = self.efficientnet.avgpool(image_features)
         x = torch.flatten(x, 1)
 
-
         # Transform the image features to match embedding size
         x_transformed = self.feature_transform(x)
 
-        # Make sure preference embedding is compatible for concatenation
-        preference_expanded = self.preference_embedding.unsqueeze(0).expand(x_transformed.size(0), -1)
+        if mode == 'siamese':
+            # Assuming images come in pairs: [neg, pos, neg, pos, ...]
+            neg_features = x_transformed[0::2]  # Negative features
+            pos_features = x_transformed[1::2]  # Positive features
 
-        # Combine transformed image features with user's preference embedding
-        combined = torch.cat((preference_expanded, x_transformed), dim=1) 
+            # Update the preference embedding
+            self.update_preference_embedding(pos_features, neg_features)
+            
+            return neg_features, pos_features
 
-        # Pass the combined features through the intermediate FC layer
-        intermediate_output = self.intermediate_fc(combined)
+        elif mode == 'prediction':
+            # Combine transformed image features with user's preference embedding
+            preference_expanded = self.preference_embedding.unsqueeze(0).expand(x_transformed.size(0), -1)
+            combined = torch.cat((preference_expanded, x_transformed), dim=1) 
 
-        # Predict and return the likelihood of the user liking the image
-        prediction = torch.sigmoid(self.prediction_layer(intermediate_output)).squeeze(-1)
+            # Pass the combined features through the intermediate FC layer
+            intermediate_output = self.intermediate_fc(combined)
 
-        # Update preference embedding if required
-        if image_label is not None:
-            self.update_preference_embedding(x_transformed, image_label)  # Use flattened features for update
+            # Predict and return the likelihood of the user liking the image
+            prediction = torch.sigmoid(self.prediction_layer(intermediate_output)).squeeze(-1)
 
-        return prediction
+            return prediction
     
     def reset_preference_embedding(self):
         """
@@ -271,25 +193,133 @@ class ME621_Model(nn.Module):
         """
         self.preference_embedding.data.fill_(0.0)
 
-    def update_preference_embedding(self, image_features, image_label, alpha=0.1):
+    def update_preference_embedding(self, pos_image_features, neg_image_features, alpha=0.01):
         """
-        Update the preference embedding based on the labels of the images.
-        - image_features: extracted features of the current images (with batch size)
-        - image_label: the labels of the images (1 for liked, 0 for not liked)
+        Update the preference embedding based on a pair of images.
+        - pos_image_features: extracted features of the liked (positive) images
+        - neg_image_features: extracted features of the not liked (negative) images
         - alpha: learning rate for updating the embedding
         """
 
-        # Calculate update direction (1 if liked, -1 if not liked)
-        update_direction = (2 * image_label - 1)
+        # Update direction is +1 for positive (liked) and -1 for negative (not liked)
+        pos_update_direction = 1
+        neg_update_direction = -1
 
-        # Calculate the average update across the batch
-        average_update = alpha * (update_direction * (image_features - self.preference_embedding.data)).mean(dim=0)
+        # Calculate updates for both positive and negative images
+        pos_update = alpha * (pos_update_direction * (pos_image_features - self.preference_embedding))
+        neg_update = alpha * (neg_update_direction * (neg_image_features - self.preference_embedding))
 
-        # Apply the average update to the preference embedding
-        self.preference_embedding.data += average_update
+        # Combine updates and apply to the preference embedding
+        total_update = pos_update + neg_update
+        self.preference_embedding.data += total_update
+
+        # Normalize the preference embedding
+        norm = self.preference_embedding.data.norm(p=2, dim=0, keepdim=True)
+        self.preference_embedding.data = self.preference_embedding.data.div(norm.clamp(min=1e-8))
 
 
 
+def contrastive_loss(neg_features, pos_features, margin=1.0):
+    """
+    Calculates a more complete contrastive loss between negative and positive features.
+
+    Args:
+    - neg_features (Tensor): Features from the negative (dissimilar) images.
+    - pos_features (Tensor): Features from the positive (similar) images.
+    - margin (float): The margin for dissimilar images.
+
+    Returns:
+    - Tensor: The contrastive loss.
+    """
+    # Calculate Euclidean distances
+    positive_loss = torch.norm(pos_features - neg_features, p=2, dim=1)
+    negative_distance = torch.norm(pos_features + neg_features, p=2, dim=1)
+
+    # Loss for negative pairs (dissimilar) - should be large
+    negative_loss = torch.relu(margin - negative_distance)
+
+    # Combine losses
+    combined_loss = positive_loss + negative_loss
+
+    # Average loss over the batch
+    return combined_loss.mean()
+
+
+
+def val_check(model, total_train_samples, total_train_correct):
+    model.eval()
+    val_loss = 0
+    total_val_samples = 0
+    total_val_correct = 0
+
+    with torch.no_grad():
+        for val_img_list, val_label_list in val_dataloader:
+            model.reset_preference_embedding()
+            val_img_list = val_img_list[0]
+            val_label_list = val_label_list[0]
+            
+            # Select a random number for siamese mode
+            siamese_size = random.randint(4, 8) * 2
+            siamese_imgs = val_img_list[0][:siamese_size]
+            siamese_labels = val_label_list[0][:siamese_size]
+            pred_imgs = val_img_list[0][siamese_size:]
+            pred_labels = val_label_list[0][siamese_size:]
+            
+            # Siamese Phase
+
+            for i in range(0, len(siamese_imgs), batch_size):
+                # Get mini-batch
+                mini_batch_img_list = siamese_imgs[i:i + batch_size]
+                mini_batch_label_list = siamese_labels[i:i + batch_size]
+
+                # Process mini-batch
+                batch_imgs = [train_transform(Image.open(img_path)).unsqueeze(0) for img_path in mini_batch_img_list]
+                batch_labels = torch.tensor(mini_batch_label_list, dtype=torch.float32)
+
+                # Convert lists to tensors
+                batch_imgs = torch.cat(batch_imgs, dim=0).to(device) 
+                batch_labels = batch_labels.to(device)
+                
+                # Model output and loss calculation
+                neg_features, pos_features = model(batch_imgs, mode='siamese')
+                loss = contrastive_loss(neg_features, pos_features)
+
+                # Update training statistics
+                val_loss += loss.item() * batch_imgs.size(0)
+                total_val_samples += batch_imgs.size(0)
+            
+            # Pred Phase
+            
+            for i in range(0, len(pred_imgs), batch_size):
+                # Get mini-batch
+                mini_batch_img_list = pred_imgs[i:i + batch_size]
+                mini_batch_label_list = pred_labels[i:i + batch_size]
+
+                # Process mini-batch
+                batch_imgs = [train_transform(Image.open(img_path)).unsqueeze(0) for img_path in mini_batch_img_list]
+                batch_labels = torch.tensor(mini_batch_label_list, dtype=torch.float32)
+
+                # Convert lists to tensors
+                batch_imgs = torch.cat(batch_imgs, dim=0).to(device) 
+                batch_labels = batch_labels.to(device)
+                
+                # Model output and loss calculation
+                output = model(batch_imgs, mode='prediction')
+                loss = criterion(output, batch_labels)
+                
+                # Update training statistics
+                val_loss += loss.item() * batch_imgs.size(0)
+                total_val_samples += batch_imgs.size(0)
+
+    val_loss /= total_val_samples
+    train_accuracy = total_train_correct / total_train_samples
+    val_accuracy = total_val_correct / total_val_samples
+
+    print(f'\nEpoch: [{epoch}] | Train Loss: {train_loss / total_train_samples:.5f} | Train Acc: {train_accuracy:.5f} | Val Loss: {val_loss:.5f} | Val Acc: {val_accuracy:.5f}')
+
+    return val_loss
+    
+        
 
 
 if __name__ == "__main__":
@@ -298,7 +328,7 @@ if __name__ == "__main__":
     name = 'ME621_Fav_1'
     image_size = 350
     dropout_rate = 0.0
-    batch_size = 4
+    batch_size = 8
     epochs = 50
     check_interval = 100
     raw_image_path = 'D:/DATA/E621/images/'
@@ -320,7 +350,7 @@ if __name__ == "__main__":
     # Define model, loss function, and optimizer
     model = ME621_Model(num_classes=1, dropout_rate=dropout_rate).to(device)
     criterion = nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters())
     #summary(model, input_size=[(batch_size, 3, image_size, image_size), (batch_size,)])
     
     
@@ -356,8 +386,6 @@ if __name__ == "__main__":
     print(f'Total Val Samples: {total_val_samples}')
     
     total_samples = len(train_dataloader.dataset)
-    batch_size = train_dataloader.batch_size
-    total_batches = -(-total_samples // 1)
 
 
     print("Starting Training...")
@@ -365,95 +393,93 @@ if __name__ == "__main__":
         model.train()
         train_loss = 0
         total_train_samples = 0
+        total_train_correct = 0
+        
         batch_counter = 0
         
 
         # Train loop
         for img_list, label_list in tqdm(train_dataloader):
+            model.reset_preference_embedding()
             img_list = img_list[0]
             label_list = label_list[0]
             
-            model.reset_preference_embedding()
-            seen_labels = 1
+            # Select a random number for siamese mode
+            siamese_size = random.randint(4, 8) * 2
+            siamese_imgs = img_list[0][:siamese_size]
+            siamese_labels = label_list[0][:siamese_size]
+            pred_imgs = img_list[0][siamese_size:]
+            pred_labels = label_list[0][siamese_size:]
             
-            # Process in mini-batches
-            for i in range(0, len(img_list), batch_size):
-                # Slice the img_list and label_list to get a mini-batch
-                mini_batch_img_list = img_list[i:i + batch_size]
-                mini_batch_label_list = label_list[i:i + batch_size]
+            # Siamese Phase
 
-                # Process the mini-batch
-                batch_imgs = []
-                batch_labels = []
-                for img_path, label in zip(mini_batch_img_list, mini_batch_label_list):
-                    # Format Data
-                    img = Image.open(img_path)
-                    img = train_transform(img).unsqueeze(0)
-                    label = torch.tensor([label], dtype=torch.float32)
-                    batch_imgs.append(img)
-                    batch_labels.append(label)
-                
+            for i in range(0, len(siamese_imgs), batch_size):
+                # Get mini-batch
+                mini_batch_img_list = siamese_imgs[i:i + batch_size]
+                mini_batch_label_list = siamese_labels[i:i + batch_size]
+
+                # Process mini-batch
+                batch_imgs = [train_transform(Image.open(img_path)).unsqueeze(0) for img_path in mini_batch_img_list]
+                batch_labels = torch.tensor(mini_batch_label_list, dtype=torch.float32)
+
                 # Convert lists to tensors
                 batch_imgs = torch.cat(batch_imgs, dim=0).to(device) 
-                batch_labels = torch.cat(batch_labels, dim=0).to(device)
+                batch_labels = batch_labels.to(device)
                 
-                if seen_labels > 0:
-                    input_label = label
-                else:
-                    input_label = None
-
-                output = model(img, input_label)
-                
-                loss = criterion(output, label)
+                # Model output and loss calculation
+                neg_features, pos_features = model(batch_imgs, mode='siamese')
+                loss = contrastive_loss(neg_features, pos_features)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
-                train_loss += loss.item() * img.size(0)
-                total_train_samples += img.size(0)
-                seen_labels -= 1
+                # Update training statistics
+                train_loss += loss.item() * batch_imgs.size(0)
+                total_train_samples += batch_imgs.size(0)
+            
+            # Pred Phase
+            
+            for i in range(0, len(pred_imgs), batch_size):
+                # Get mini-batch
+                mini_batch_img_list = pred_imgs[i:i + batch_size]
+                mini_batch_label_list = pred_labels[i:i + batch_size]
+
+                # Process mini-batch
+                batch_imgs = [train_transform(Image.open(img_path)).unsqueeze(0) for img_path in mini_batch_img_list]
+                batch_labels = torch.tensor(mini_batch_label_list, dtype=torch.float32)
+
+                # Convert lists to tensors
+                batch_imgs = torch.cat(batch_imgs, dim=0).to(device) 
+                batch_labels = batch_labels.to(device)
+                
+                # Model output and loss calculation
+                output = model(batch_imgs, mode='prediction')
+                loss = criterion(output, batch_labels)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                # Update training statistics
+                train_loss += loss.item() * batch_imgs.size(0)
+                total_train_samples += batch_imgs.size(0)
+                
+                
+                
+                
+                
+
 
             batch_counter += 1
 
 
             # Perform validation check at specified interval
             if batch_counter % check_interval == 0:
-                model.eval()
-                val_loss = 0
-                total_val_samples = 0
-
-                with torch.no_grad():
-                    for val_img_list, val_label_list in val_dataloader:
-                        
-                        model.reset_preference_embedding()
-                        seen_labels = 5
-                        
-                        for img_path, label in zip(val_img_list, val_label_list):
-                            # Format Data
-                            img = Image.open(img_path)
-                            img = train_transform(img).to(device).unsqueeze(0)
-                            label = torch.tensor([label], dtype=torch.float32).to(device)
-
-                            if seen_labels > 0:
-                                input_label = label
-                            else:
-                                input_label = None
-                    
-                            output = model(img, input_label)
-
-                            loss = criterion(output, label)
-
-                            val_loss += loss.item() * img.size(0)
-                            total_val_samples += img.size(0)
-                            
-                            seen_labels -= 1
-
-                val_loss /= total_val_samples
-                print(f'\nEpoch: [{epoch}] [{int((batch_counter / total_batches) * 100)}%] | Train Loss: {train_loss / total_train_samples:.5f} | Val Loss: {val_loss:.5f}')
-                train_loss = 0
-                total_train_samples = 1
+                val_loss = val_check(model, total_train_samples, total_train_correct)
                 model.train()
-
+                total_train_correct = 0
+                train_loss = 0
+                total_train_samples = 0
+                
                 if val_loss < lowest_val_loss:
                     lowest_val_loss = val_loss
                     state = {
@@ -464,5 +490,22 @@ if __name__ == "__main__":
                     }
                     torch.save(state, f"{env}/models/{name}.pt")
                     print(f"Saved Model")
-                    
+                
+                
+        val_loss = val_check(model, total_train_samples, total_train_correct)
+        model.train()
+        total_train_correct = 0
+        train_loss = 0
+        total_train_samples = 0
+        
+        if val_loss < lowest_val_loss:
+            lowest_val_loss = val_loss
+            state = {
+                'epoch': epoch,
+                'model_state': model.state_dict(),
+                'optimizer_state': optimizer.state_dict(),
+                'val_loss': lowest_val_loss
+            }
+            torch.save(state, f"{env}/models/{name}.pt")
+            print(f"Saved Model")
                     
