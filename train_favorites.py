@@ -1,6 +1,7 @@
 import torch
 import os, ast
 import numpy as np
+from arch.model_favorite import *
 import random
 import torch.nn as nn
 import pandas as pd
@@ -9,7 +10,6 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
 from data.image_proc import *
-import torchvision.models as models
 from tqdm import tqdm
 import warnings
 from torchinfo import summary
@@ -65,15 +65,65 @@ class ME621_Dataset(Dataset):
         self.current_bag_index = (self.current_bag_index + 1) % len(self.favorite_ids_list)
 
         return bag_img_paths, labels
-    
+
+class ME621_Siamese_Dataset(Dataset):
+    def __init__(self, image_ids, image_paths, favorite_ids_list, transform=None):
+        self.image_ids = image_ids
+        self.image_paths = image_paths
+        self.favorite_ids_list = favorite_ids_list
+        self.transform = transform
+        # Pre-calculate the cumulative length of favorite lists for indexing
+        self.cumulative_lengths = [len(fav_list) for fav_list in favorite_ids_list]
+        self.total_length = sum(self.cumulative_lengths)
+
+    def __len__(self):
+        return self.total_length
+
+    def __getitem__(self, index):
+        # Determine which favorite list the index refers to
+        list_index = 0
+        while index >= self.cumulative_lengths[list_index]:
+            index -= self.cumulative_lengths[list_index]
+            list_index += 1
+
+        # Now index is the position within the selected favorite list
+        selected_list = self.favorite_ids_list[list_index]
+        positive_id = selected_list[index]
+        positive_index = self.image_ids.index(positive_id)
+        positive_img_path = self.image_paths[positive_index]
+
+        # Prepare for negative image selection
+        random_favorite_set = set(selected_list)
+        max_favorite_id = max(random_favorite_set)
+
+        non_favorites = [img_id for img_id in self.image_ids if img_id not in random_favorite_set and img_id < max_favorite_id]
+        non_favorite_id = random.choice(non_favorites)
+        non_favorite_index = self.image_ids.index(non_favorite_id)
+        negative_img_path = self.image_paths[non_favorite_index]
+
+        # Apply transformations if any
+        positive_img = self.transform(Image.open(positive_img_path)) if self.transform else Image.open(positive_img_path)
+        negative_img = self.transform(Image.open(negative_img_path)) if self.transform else Image.open(negative_img_path)
+
+        return positive_img, negative_img
+
+
 def custom_collate(batch):
     img_list = []
     label_list = []
     for imgs, labels in batch:
         img_list.append(imgs)
         label_list.append(labels)
-    return img_list, label_list
+    return img_list[0], label_list[0]
 
+
+def Siamese_Collate(batch):
+    imgs = []
+    for pos_img, neg_img in batch:
+        imgs.append(pos_img.unsqueeze(0))  # Add batch dimension
+        imgs.append(neg_img.unsqueeze(0))  # Add batch dimension
+    imgs_tensor = torch.cat(imgs, dim=0)  # Concatenate along the batch dimension
+    return imgs_tensor
 
 def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
     # Load the image dataset
@@ -113,142 +163,14 @@ def create_datasets(image_dir, user_dir, data_csv, output_dir, image_size):
     
     #train_labels = [train_labels[0]]
     #train_labels = [val_labels[0]]
-
-    # Create datasets
-    train_dataset = ME621_Dataset(image_ids, image_paths, train_labels)
-    val_dataset = ME621_Dataset(image_ids, image_paths, val_labels)
-
     
-    #train_dataset.show_image(0)
-    #train_dataset.show_image(1)
-    #train_dataset.show_image(2)
-    
-    return train_dataset, val_dataset
+    return image_ids, image_paths, train_labels, val_labels
 
 
 
 
 
 
-class ME621_Model(nn.Module):
-    def __init__(self, num_classes=1, dropout_rate=0.5, embedding_dim=512, interpreter_fc_size=256):
-        super(ME621_Model, self).__init__()
-
-        # CNN feature extractor
-        self.efficientnet = models.efficientnet_v2_s(weights='EfficientNet_V2_S_Weights.DEFAULT')
-        num_ftrs = self.efficientnet.classifier[1].in_features
-        self.efficientnet.classifier = nn.Identity()
-        
-        # Norm Layers
-        self.embedding_norm = nn.LayerNorm(embedding_dim)
-        self.features_norm = nn.BatchNorm1d(embedding_dim)
-        
-        # New layer to match feature size to embedding size
-        self.feature_transform = nn.Linear(num_ftrs, embedding_dim)
-
-        # Preference Embedding
-        self.preference_embedding = nn.Parameter(torch.zeros(embedding_dim))
-
-        # Intermediate FC layer
-        self.intermediate_fc = nn.Sequential(
-            nn.Linear(embedding_dim * 2, interpreter_fc_size),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate)
-        )
-        
-
-        # Prediction Layer
-        self.prediction_layer = nn.Linear(interpreter_fc_size, num_classes)
-            
-    def reset_preference_embedding(self):
-        #Reset the preference embedding to its initial state (e.g., all zeros).
-        self.preference_embedding.data.fill_(0.0)
-
-    def forward(self, image, mode='prediction'):
-        # Extract features from the image using the CNN
-        image_features = self.efficientnet.features(image)
-        x = self.efficientnet.avgpool(image_features)
-        x = torch.flatten(x, 1)
-
-        # Transform the image features to match embedding size
-        x_transformed = self.feature_transform(x)
-        # normalize features
-        x_transformed = self.features_norm(x_transformed)
-
-        if mode == 'siamese':
-            # Assuming images come in pairs: [neg, pos, neg, pos, ...]
-            neg_features = x_transformed[0::2]  # Negative features
-            pos_features = x_transformed[1::2]  # Positive features
-
-            # Update the preference embedding
-            self.update_preference_embedding(neg_features, pos_features)
-            
-            return neg_features, pos_features
-
-        elif mode == 'prediction':
-            # Combine transformed image features with user's preference embedding
-            preference_expanded = self.preference_embedding.unsqueeze(0).expand(x_transformed.size(0), -1)
-            combined = torch.cat((preference_expanded, x_transformed), dim=1) 
-
-            # Pass the combined features through the intermediate FC layer
-            intermediate_output = self.intermediate_fc(combined)
-
-            # Predict and return the likelihood of the user liking the image
-            prediction = torch.sigmoid(self.prediction_layer(intermediate_output)).squeeze(-1)
-
-            return prediction
-    
-    
-
-    def update_preference_embedding(self, neg_image_features, pos_image_features, alpha=0.01):
-        """
-        Update the preference embedding based on a pair of images.
-        - pos_image_features: extracted features of the liked (positive) images
-        - neg_image_features: extracted features of the not liked (negative) images
-        - alpha: learning rate for updating the embedding
-        """
-
-        # Update direction is +1 for positive (liked) and -1 for negative (not liked)
-        pos_update_direction = 1
-        neg_update_direction = -1
-
-        # Calculate updates for both positive and negative images
-        pos_update = alpha * (pos_update_direction * (pos_image_features - self.preference_embedding))
-        neg_update = alpha * (neg_update_direction * (neg_image_features - self.preference_embedding))
-
-        # Combine updates and apply to the preference embedding
-        self.preference_embedding.data += (pos_update + neg_update).sum(dim=0)
-        
-        # Normalize the preference embedding after the update
-        self.preference_embedding.data = self.embedding_norm(self.preference_embedding.unsqueeze(0)).squeeze(0)
-
-
-
-
-def contrastive_loss(neg_features, pos_features, margin=1.0):
-    """
-    Calculates a more complete contrastive loss between negative and positive features.
-
-    Args:
-    - neg_features (Tensor): Features from the negative (dissimilar) images.
-    - pos_features (Tensor): Features from the positive (similar) images.
-    - margin (float): The margin for dissimilar images.
-
-    Returns:
-    - Tensor: The contrastive loss.
-    """
-    # Calculate Euclidean distances
-    positive_loss = torch.norm(pos_features - neg_features, p=2, dim=1)
-    negative_distance = torch.norm(pos_features + neg_features, p=2, dim=1)
-
-    # Loss for negative pairs (dissimilar) - should be large
-    negative_loss = torch.relu(margin - negative_distance)
-
-    # Combine losses
-    combined_loss = positive_loss + negative_loss
-
-    # Average loss over the batch
-    return combined_loss.mean()
 
 
 class LossMetrics:
@@ -286,66 +208,73 @@ class LossMetrics:
 
     
     
+def PackageSiameseBatch(siamese_imgs, i):
+    # Get mini-batch
+    mini_batch_img_list = siamese_imgs[i:i + batch_size]
+    # Process mini-batch
+    batch_imgs = [train_transform(Image.open(img_path)).unsqueeze(0) for img_path in mini_batch_img_list]
+    # Convert lists to tensors
+    return torch.cat(batch_imgs, dim=0).to(device) 
 
-def val_check(model, train_siamese_metrics, train_pred_metrics):
+
+def val_check(model, train_siamese_metrics, train_pred_metrics, training_mode):
     model.eval()
     val_siamese_metrics = LossMetrics()
     val_pred_metrics = LossMetrics()
 
     with torch.no_grad():
         for val_img_list, val_label_list in val_dataloader:
-            model.reset_preference_embedding()
-            val_img_list = val_img_list[0]
-            val_label_list = val_label_list[0]
             
-            # Select a random number for siamese mode
-            siamese_size = random.randint(4, 8) * 2
-            siamese_imgs = val_img_list[:siamese_size]
-            siamese_labels = val_label_list[:siamese_size]
-            pred_imgs = val_img_list[siamese_size:]
-            pred_labels = val_label_list[siamese_size:]
-            
-            # Siamese Phase
+            if training_mode == 'Siamese':
+                # Siamese Phase
+                for i in range(0, len(val_img_list), batch_size):
+                    # Get mini-batch
+                    batch_imgs = PackageSiameseBatch(val_img_list, i)
+                    
+                    # Model output and loss calculation
+                    neg_features, pos_features = model(batch_imgs, mode='siamese', train = True)
+                    loss = contrastive_loss(neg_features, pos_features)
 
-            for i in range(0, len(siamese_imgs), batch_size):
-                # Get mini-batch
-                mini_batch_img_list = siamese_imgs[i:i + batch_size]
+                    # Update val statistics
+                    val_siamese_metrics.update(loss, None, None, len(batch_imgs))
 
-                # Process mini-batch
-                batch_imgs = [train_transform(Image.open(img_path)).unsqueeze(0) for img_path in mini_batch_img_list]
-
-                # Convert lists to tensors
-                batch_imgs = torch.cat(batch_imgs, dim=0).to(device) 
+            elif training_mode == 'Pred':
+                # Siamese Phase
+                model.reset_preference_embedding()
                 
-                # Model output and loss calculation
-                neg_features, pos_features = model(batch_imgs, mode='siamese')
-                loss = contrastive_loss(neg_features, pos_features)
+                # Select a random number for siamese mode
+                siamese_size = random.randint(4, 8) * 2
+                siamese_imgs = val_img_list[:siamese_size]
+                pred_imgs = val_img_list[siamese_size:]
+                pred_labels = val_label_list[siamese_size:]
 
-                # Update val statistics
-                val_siamese_metrics.update(loss, None, None, len(batch_imgs))
-            
-            # Pred Phase
-            
-            for i in range(0, len(pred_imgs), batch_size):
-                # Get mini-batch
-                mini_batch_img_list = pred_imgs[i:i + batch_size]
-                mini_batch_label_list = pred_labels[i:i + batch_size]
-
-                # Process mini-batch
-                batch_imgs = [train_transform(Image.open(img_path)).unsqueeze(0) for img_path in mini_batch_img_list]
-                batch_labels = torch.tensor(mini_batch_label_list, dtype=torch.float32)
-
-                # Convert lists to tensors
-                batch_imgs = torch.cat(batch_imgs, dim=0).to(device) 
-                batch_labels = batch_labels.to(device)
+                for i in range(0, len(siamese_imgs), batch_size):
+                    # Get mini-batch
+                    batch_imgs = PackageSiameseBatch(siamese_imgs, i)
+                    
+                    # Model output and loss calculation
+                    _, _ = model(batch_imgs, mode='siamese')
                 
-                # Model output and loss calculation
-                output = model(batch_imgs, mode='prediction')
-                loss = criterion(output, batch_labels)
-                
-                # Update val statistics
-                val_pred_metrics.update(loss, output, batch_labels, len(batch_imgs))
+                # Pred Phase 
+                for i in range(0, len(pred_imgs), batch_size):
+                    # Get mini-batch
+                    mini_batch_img_list = pred_imgs[i:i + batch_size]
+                    mini_batch_label_list = pred_labels[i:i + batch_size]
 
+                    # Process mini-batch
+                    batch_imgs = [train_transform(Image.open(img_path)).unsqueeze(0) for img_path in mini_batch_img_list]
+                    batch_labels = torch.tensor(mini_batch_label_list, dtype=torch.float32)
+
+                    # Convert lists to tensors
+                    batch_imgs = torch.cat(batch_imgs, dim=0).to(device) 
+                    batch_labels = batch_labels.to(device)
+                    
+                    # Model output and loss calculation
+                    output = model(batch_imgs, mode='prediction')
+                    loss = criterion(output, batch_labels)
+                    
+                    # Update val statistics
+                    val_pred_metrics.update(loss, output, batch_labels, len(batch_imgs))
 
     # Prepare values for printing
     train_siamese_loss = train_siamese_metrics.average_loss()
@@ -369,7 +298,7 @@ if __name__ == "__main__":
     name = 'ME621_Fav_1'
     image_size = 350
     dropout_rate = 0.0
-    batch_size = 16
+    batch_size = 8
     epochs = 50
     check_interval = 1000
     raw_image_path = 'D:/DATA/E621/images/'
@@ -377,15 +306,33 @@ if __name__ == "__main__":
     image_csv = 'D:/DATA/E621/source_images.csv'
     user_csv = 'D:/DATA/E621/source_users_testing.csv'
 
+    training_mode = 'Siamese'
+    
+    # Define transforms
+    train_transform = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                ])
+    val_transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                ])
 
     # Load the dataset
     print('Preparing Dataset...')
-    train_dataset, val_dataset = create_datasets(raw_image_path, user_csv, image_csv, ready_images_path, image_size)
+    image_ids, image_paths, train_labels, val_labels = create_datasets(raw_image_path, user_csv, image_csv, ready_images_path, image_size)
 
-
-    # DataLoaders
-    train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=custom_collate, num_workers=2, pin_memory=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, collate_fn=custom_collate, num_workers=2, pin_memory=True)
+    if training_mode == 'Siamese':
+        train_dataset = ME621_Siamese_Dataset(image_ids, image_paths, train_labels, train_transform)
+        val_dataset = ME621_Siamese_Dataset(image_ids, image_paths, val_labels, val_transform)
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=Siamese_Collate, num_workers=2, pin_memory=True)
+        val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=Siamese_Collate, num_workers=2, pin_memory=True)
+    else:
+        train_dataset = ME621_Dataset(image_ids, image_paths, train_labels)
+        val_dataset = ME621_Dataset(image_ids, image_paths, val_labels)
+        train_dataloader = DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=custom_collate, num_workers=2, pin_memory=True)
+        val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, collate_fn=custom_collate, num_workers=2, pin_memory=True)
 
     
     # Define model, loss function, and optimizer
@@ -414,16 +361,7 @@ if __name__ == "__main__":
         print(f"Model with val loss: {lowest_val_loss:.6f}, resuming from epoch {start_epoch}")
         
         
-    # Define transforms
-    train_transform = transforms.Compose([
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-                ])
-    val_transform = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-                ])
+    
 
     
     total_train_samples = len(train_dataloader)
@@ -434,7 +372,7 @@ if __name__ == "__main__":
     total_samples = len(train_dataloader.dataset)
 
 
-    training_mode = 'Siamese'
+    
     
     print("Starting Training...")
     for epoch in range(start_epoch, epochs):
@@ -444,55 +382,40 @@ if __name__ == "__main__":
         batch_counter = 0
         
 
-        # Train loop
-        for img_list, label_list in tqdm(train_dataloader):
-            model.reset_preference_embedding()
-            img_list = img_list[0]
-            label_list = label_list[0]
+        if training_mode == 'Siamese':
+        
+            for batch_imgs in tqdm(train_dataloader):
+                batch_imgs = batch_imgs.to(device) 
+                
+                # Model output and loss calculation
+                optimizer_siamese.zero_grad()
+                neg_features, pos_features = model(batch_imgs, mode='siamese', train = True)
+                loss = contrastive_loss(neg_features, pos_features)
+                print(loss)
+                loss.backward()
+                optimizer_siamese.step()
+
+                # Update training statistics
+                train_siamese_metrics.update(loss, None, None, len(batch_imgs)) 
+                    
+        elif training_mode == 'Pred':
             
-            # Select a random number for siamese mode
-            siamese_size = random.randint(4, 16) * 2
-            siamese_imgs = img_list[:siamese_size]
-            siamese_labels = label_list[:siamese_size]
-            pred_imgs = img_list[siamese_size:]
-            pred_labels = label_list[siamese_size:]
-            
-            if training_mode == 'Siamese':
+            for img_list, label_list in tqdm(train_dataloader):
                 # Siamese Phase
+                model.reset_preference_embedding()
+                
+                # Select a random number for siamese mode
+                siamese_size = random.randint(4, 16) * 2
+                siamese_imgs = img_list[:siamese_size]
+                pred_imgs = img_list[siamese_size:]
+                pred_labels = label_list[siamese_size:]
+            
                 for i in range(0, len(siamese_imgs), batch_size):
                     # Get mini-batch
-                    mini_batch_img_list = siamese_imgs[i:i + batch_size]
-
-                    # Process mini-batch
-                    batch_imgs = [train_transform(Image.open(img_path)).unsqueeze(0) for img_path in mini_batch_img_list]
-
-                    # Convert lists to tensors
-                    batch_imgs = torch.cat(batch_imgs, dim=0).to(device) 
+                    batch_imgs = PackageSiameseBatch(siamese_imgs, i)
                     
                     # Model output and loss calculation
-                    neg_features, pos_features = model(batch_imgs, mode='siamese')
-                    loss = contrastive_loss(neg_features, pos_features)
-                    optimizer_siamese.zero_grad()
-                    loss.backward()
-                    optimizer_siamese.step()
-
-                    # Update training statistics
-                    train_siamese_metrics.update(loss, None, None, len(batch_imgs)) 
-                    
-            elif training_mode == 'Pred':
-                # Siamese Phase
-                for i in range(0, len(siamese_imgs), batch_size):
-                    # Get mini-batch
-                    mini_batch_img_list = siamese_imgs[i:i + batch_size]
-
-                    # Process mini-batch
-                    batch_imgs = [train_transform(Image.open(img_path)).unsqueeze(0) for img_path in mini_batch_img_list]
-
-                    # Convert lists to tensors
-                    batch_imgs = torch.cat(batch_imgs, dim=0).to(device) 
-                    
-                    # Model output and loss calculation
-                    _, _ = model(batch_imgs, mode='siamese')
+                    _, _ = model(batch_imgs, mode='siamese_pred')
                 
                 # Pred Phase 
                 total_train_samples = 0
@@ -511,9 +434,9 @@ if __name__ == "__main__":
                     batch_labels = batch_labels.to(device)
                     
                     # Model output and loss calculation
+                    optimizer_prediction.zero_grad()
                     output = model(batch_imgs, mode='prediction')
                     loss = criterion(output, batch_labels)
-                    optimizer_prediction.zero_grad()
                     loss.backward()
                     optimizer_prediction.step()
 
@@ -524,7 +447,7 @@ if __name__ == "__main__":
             # Perform validation check at specified interval
             batch_counter += 1
             if batch_counter % check_interval == 0:
-                val_loss = val_check(model, train_siamese_metrics, train_pred_metrics)
+                val_loss = val_check(model, train_siamese_metrics, train_pred_metrics, training_mode)
                 model.train()
                 total_train_correct = 0
                 train_loss = 0
