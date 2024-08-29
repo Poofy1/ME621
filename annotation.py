@@ -28,7 +28,7 @@ config = load_config()
 key = f"{config['USERNAME']}:{config['API_KEY']}"
 key = base64.b64encode(key.encode()).decode()
 headers = {
-    'User-Agent': config["HEADER"],
+    'User-Agent': "User Annotation (https://github.com/Poofy1/ME621)",
     'Authorization': f"Basic {key}"
 }
 
@@ -73,8 +73,15 @@ def save_labeled_images(images_data):
     os.makedirs(images_dir, exist_ok=True)
     dataset_path = os.path.join(config['SAVE_DIR'], 'dataset.csv')
 
+    file_exists = os.path.isfile(dataset_path)
+
     with open(dataset_path, 'a', newline='') as f:
         writer = csv.writer(f)
+        
+        # Write headers if the file is new
+        if not file_exists:
+            writer.writerow(['image_name', 'label', 'split'])
+
         for image_data in images_data:
             image_id = image_data['id']
             image_path = os.path.join(images_dir, f"{image_id}.png")
@@ -124,6 +131,16 @@ def get_images():
         yield f"data: {json.dumps({'images': processed_images})}\n\n"
     
     return Response(generate(), mimetype='text/event-stream')
+
+@app.route('/api/label-count')
+def get_label_count():
+    dataset_path = os.path.join(config['SAVE_DIR'], 'dataset.csv')
+    count = 0
+    if os.path.exists(dataset_path):
+        with open(dataset_path, 'r') as f:
+            csv_reader = csv.reader(f)
+            count = sum(1 for row in csv_reader if row[1] == '1')
+    return jsonify({'count': count})
 
 @app.route('/api/save', methods=['POST'])
 def save_labels():

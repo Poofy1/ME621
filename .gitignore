@@ -19,8 +19,8 @@
 *.pth
 *.safetensors
 *.yaml
+*.db
 
-*.html
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs

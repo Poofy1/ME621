@@ -1,5 +1,5 @@
 import torch
-import os, sys
+import os, sys, json
 import pandas as pd
 from tqdm import tqdm
 import torch.nn as nn
@@ -17,10 +17,16 @@ env = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'load_model'))
 
+# Load configuration
+def load_config():
+    with open(f'{env}/config.json', 'r') as config_file:
+        return json.load(config_file)
+
+config = load_config()
+
 # Paths
-model_path = "F:/CODE/ME621/models/furception_vae_1-0.safetensors"
-dataset_path = "D:/DATA/E621/dataset.csv"
-image_path = "D:/DATA/E621/images/"
+dataset_path = f"{config['SAVE_DIR']}/dataset.csv"
+image_path = f"{config['SAVE_DIR']}/images/"
 
 
 # Load model
@@ -130,9 +136,9 @@ transform = transforms.Compose([
 train_dataset = FurryDataset(csv_file=dataset_path, img_dir=image_path, transform=transform, split='train')
 val_dataset = FurryDataset(csv_file=dataset_path, img_dir=image_path, transform=transform, split='val')
 
-train_sampler = BalancedSampler(train_dataset, batch_size=16)
+train_sampler = BalancedSampler(train_dataset, batch_size=8)
 train_loader = DataLoader(train_dataset, batch_sampler=train_sampler)
-val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
 
 # Initialize model and optimizer
 model = FurryClassifier(vae_encoder)
