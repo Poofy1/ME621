@@ -1,278 +1,208 @@
 import torch
-import os
-import random
-import torch.nn as nn
+import os, sys
 import pandas as pd
-from PIL import Image
+from tqdm import tqdm
+import torch.nn as nn
 import numpy as np
-from tqdm import tqdm as tqdm_loop
-import matplotlib.pyplot as plt
-import torch.optim as optim
-from sklearn.metrics import classification_report
-import torchvision.transforms as transforms
+from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import Dataset, DataLoader
-import torchvision.models as models
-from collections import Counter
-from efficientnet_pytorch import EfficientNet
-from torch.utils.data import WeightedRandomSampler
-import multiprocessing
-import warnings
-from sklearn.exceptions import UndefinedMetricWarning
-from torchinfo import summary
-from efficientnet_pytorch import EfficientNet
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from torch.utils.data import Sampler
+import torchvision.transforms as transforms
+from PIL import Image
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+os.environ['TORCH_USE_CUDA_DSA'] = '1'
 env = os.path.dirname(os.path.abspath(__file__))
-warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
+
+# dependencies 
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'load_model'))
+
+# Paths
+model_path = "F:/CODE/ME621/models/furception_vae_1-0.safetensors"
+dataset_path = "D:/DATA/E621/dataset.csv"
+image_path = "D:/DATA/E621/images/"
 
 
-class StaticNoise:
-    def __init__(self, intensity_min=0.0, intensity_max=0.2):
-        self.intensity_min = intensity_min
-        self.intensity_max = intensity_max
+# Load model
+from modules import timer
+from modules import initialize_util
+from modules import initialize
+initialize.imports()
+initialize.check_versions()
+initialize.initialize()
+from modules import sd_models
+model = sd_models.model_data.get_sd_model()
 
-    def __call__(self, img):
-        intensity = random.uniform(self.intensity_min, self.intensity_max)
-        noise = torch.randn(*img.size()) * intensity
-        img = torch.clamp(img + noise, 0, 1)
-
-        return img
-    
-class SquareResize:
-    def __init__(self, size):
-        self.size = size
-
-    def __call__(self, img):
-        # Calculate the dimensions of the padded image
-        max_dim = max(img.size)
-        h_pad = max_dim - img.size[1]
-        w_pad = max_dim - img.size[0]
-
-        # Pad the image with zeros
-        padded_img = transforms.functional.pad(img, (w_pad//2, h_pad//2, w_pad - w_pad//2, h_pad - h_pad//2), 0)
-
-        # Resize the image to the desired size
-        resized_img = transforms.Resize((self.size, self.size))(padded_img)
-
-        return resized_img
+# Extract Encoder
+vae = model.first_stage_model
+vae_encoder = vae.encoder
 
 
-
-
-class MyDataset(Dataset):
-    def __init__(self, root, transform=None):
-        self.root = root
-        self.transform = transform
-        self.image_paths, self.labels = self._get_data()
-
-    def _get_data(self):
-        image_paths = []
-        labels = []
-        for label, class_name in enumerate(os.listdir(self.root)):
-            class_path = os.path.join(self.root, class_name)
-            for image_name in os.listdir(class_path):
-                image_path = os.path.join(class_path, image_name)
-                image_paths.append(image_path)
-                labels.append(label)
-        return image_paths, labels
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, index):
-        img_path = self.image_paths[index]
-        img = Image.open(img_path).convert("RGB")
-        label = self.labels[index]
+class FurryClassifier(nn.Module):
+    def __init__(self, vae_encoder):
+        super().__init__()
+        self.encoder = vae_encoder
         
-        if self.transform:
-            img = self.transform(img)
-            
-            ###
-            """# Reverse normalization
-            denorm = lambda t: (t * 0.5) + 0.5
-            inv_img = denorm(img.clone())
-
-            # Save the image
-            transformed_img_path = os.path.join("D:/DATA/E621", f"{index}.png")
-            img_save = transforms.ToPILImage()(inv_img)
-            img_save.save(transformed_img_path)"""
-            ###
-
-        return img, label
-
-
-class MyModel(nn.Module):
-    def __init__(self, num_classes=2):
-        super(MyModel, self).__init__()
-        self.efficientnet = EfficientNet.from_pretrained("efficientnet-b0", dropout_rate=dropout_rate)
-    
-        # Freeze all layers in EfficientNet
-        for param in self.efficientnet.parameters():
+        # Freeze the encoder parameters
+        for param in self.encoder.parameters():
             param.requires_grad = False
         
-        # Unfreeze the last two blocks
-        num_blocks = len(self.efficientnet._blocks)
-        for block_idx in range(num_blocks - 5, num_blocks):
-            for param in self.efficientnet._blocks[block_idx].parameters():
-                param.requires_grad = True
+        # The encoder's output shape is (batch_size, 8, 64, 64)
+        self.flattened_size = 8 * 64 * 64
         
-        num_ftrs = self.efficientnet._fc.in_features
-        self.efficientnet._fc = nn.Linear(num_ftrs, num_classes)
-
-        
-        # Unfreeze the fc layer
-        for param in self.efficientnet._fc.parameters():
-            param.requires_grad = True
-
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(self.flattened_size, 128), 
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(128, 1),
+        )
+    
     def forward(self, x):
-        x = self.efficientnet(x)
-        return x
+        # Pass input through the encoder
+        x = x.half()
+        encoded = self.encoder(x)
+        pred = self.fc(encoded)
+
+        return pred
+
+# Custom dataset
+class FurryDataset(Dataset):
+    def __init__(self, csv_file, img_dir, transform=None, split='train'):
+        self.data = pd.read_csv(csv_file)
+        self.img_dir = img_dir
+        self.transform = transform
+        self.split = split
+        
+        # Filter data based on split
+        self.data = self.data[self.data['split'] == split].reset_index(drop=True)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        img_name = self.data.iloc[index, 0]
+        img_path = os.path.join(self.img_dir, img_name)
+        image = Image.open(img_path).convert('RGB')
+        label = self.data.iloc[index, 1]
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
+
+    def get_labels(self):
+        return self.data['label'].values
+
+
+class BalancedSampler(Sampler):
+    def __init__(self, dataset, batch_size):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.positive_indices = np.where(dataset.data['label'] == 1)[0]
+        self.negative_indices = np.where(dataset.data['label'] == 0)[0]
+        
+    def __iter__(self):
+        pos_idx = self.positive_indices.copy()
+        np.random.shuffle(pos_idx)
+        
+        batches = []
+        for i in range(0, len(pos_idx), self.batch_size // 2):
+            pos_batch = pos_idx[i:i + self.batch_size // 2]
+            neg_batch = np.random.choice(self.negative_indices, size=self.batch_size // 2, replace=False)
+            batch = np.concatenate([pos_batch, neg_batch])
+            np.random.shuffle(batch)
+            batches.append(batch.tolist())  # Convert to list and append as a batch
+        
+        return iter(batches)
     
-    def extract_features(self, x):
-        # Temporarily remove the classifier
-        classifier = self.efficientnet._fc
-        self.efficientnet._fc = nn.Identity()
+    def __len__(self):
+        return len(self.positive_indices) * 2 // self.batch_size  # Number of batches per epoch
 
-        # Extract features
-        x = self.efficientnet.extract_features(x)
-
-        # Restore the classifier
-        self.efficientnet._fc = classifier
-
-        return x
-
-# Config
-image_size = 224
-weight_decay = 1e-5
-dropout_rate = 0.5
-train_path = "F:/CODE/ME621/Dataset/train/"
-val_path = "F:/CODE/ME621/Dataset/val/"
-
-# Define transforms for data augmentation
+    
+# Data loading
 transform = transforms.Compose([
-    transforms.RandomRotation(degrees=90),
-    transforms.RandomResizedCrop(size=image_size, scale=(1, 1.5)),
-    transforms.RandomPerspective(distortion_scale=0.5),
-    #transforms.GaussianBlur(kernel_size=3, sigma=(0.0001, 0.3)),
-    transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(brightness=(0.7, 1.1), contrast=(0.35, 1.15), saturation=(0, 1.5), hue=(-0.1, 0.1)),
-    SquareResize(image_size),
+    transforms.Resize((512, 512)),
     transforms.ToTensor(),
-    StaticNoise(intensity_min=0.0, intensity_max=0.03),
-    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 ])
 
+train_dataset = FurryDataset(csv_file=dataset_path, img_dir=image_path, transform=transform, split='train')
+val_dataset = FurryDataset(csv_file=dataset_path, img_dir=image_path, transform=transform, split='val')
 
-# Define transforms for data augmentation
-val_transform = transforms.Compose([
-    SquareResize(image_size),
-    transforms.ToTensor(),
-    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-])
+train_sampler = BalancedSampler(train_dataset, batch_size=16)
+train_loader = DataLoader(train_dataset, batch_sampler=train_sampler)
+val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+
+# Initialize model and optimizer
+model = FurryClassifier(vae_encoder)
+print(f"Total Parameters: {sum(p.numel() for p in model.parameters())}") 
+optimizer = torch.optim.Adam(model.fc.parameters(), lr=0.001)
+criterion = nn.BCEWithLogitsLoss().cuda()
+scaler = GradScaler()
 
 
-def train_model(name, continue_training, batch_size, num_epochs, ):
-    multiprocessing.freeze_support()
- 
-    # Define model, loss function, and optimizer
-    model = MyModel().to(device)
+# Training loop
+num_epochs = 10
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model.to(device)
 
-    # print out the model summary
-    summary(model, input_size=(batch_size, 3, image_size, image_size))
+for epoch in range(num_epochs):
+    model.train()
+    total_train_loss = 0
+    correct_train = 0
+    total_train = 0
     
+    for images, labels in tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} - Training'):
+        images = images.to(device)
+        labels = labels.float().to(device).unsqueeze(1)
         
-    # Load the dataset
-    train_dataset = MyDataset(train_path, transform = transform)
-    val_dataset = MyDataset(val_path, transform = val_transform)
-
-    # Calculate class counts and weights for the training set
-    train_class_counts = Counter(train_dataset.labels)
-    train_total_samples = len(train_dataset.labels)
-    train_class_weights = [train_total_samples / train_class_counts[label] for label in train_dataset.labels]
-    train_sampler = WeightedRandomSampler(train_class_weights, len(train_dataset))
-
-    # Create the DataLoaders for the training and validation sets
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, num_workers=8, persistent_workers=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, persistent_workers=True)
-    
-    # Define the weighted loss function
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=weight_decay)
-    
-    # Continue Training?
-    if continue_training:
-        model = torch.load(f"{env}/models/{name}.pt")
-        
-    print("Starting Training...")
-    for epoch in range(num_epochs):
-        model.train()
-        train_loss = 0.0
-        train_acc = 0.0
-        total_samples = 0
-        y_pred = []
-        y_true = []
-
-        for images, labels in tqdm_loop(train_dataloader):
-            images = images.to(device)
-            labels = labels.to(device)
-
+        optimizer.zero_grad()
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
             outputs = model(images)
             loss = criterion(outputs, labels)
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            train_loss += loss.item() * images.size(0)
-            _, pred = torch.max(outputs, 1)
-            correct = (pred == labels).sum().item()
-            train_acc += correct
-            y_pred += pred.cpu().numpy().tolist()
-            y_true += labels.cpu().numpy().tolist()
-            total_samples += len(labels)
-
-        train_loss = train_loss / total_samples
-        train_acc = train_acc / total_samples
-
-        print(f'Epoch: {epoch} Training Loss: {train_loss:.6f} Accuracy: {train_acc:.6f}')
-        print(classification_report(y_true, y_pred))
+        
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+        
+        total_train_loss += loss.item()
+        predicted = (torch.sigmoid(outputs) > 0.5).float()
+        correct_train += (predicted == labels).sum().item()
+        total_train += labels.size(0)
         
         
-        # Validation loop
-        model.eval()
-        val_loss = 0.0
-        val_acc = 0.0
-        total_samples = 0
-        y_pred = []
-        y_true = []
+    
+    train_loss = total_train_loss / len(train_loader)
+    train_acc = 100 * correct_train / total_train
 
-        for images, labels in val_dataloader:
+    # Validation
+    model.eval()
+    total_val_loss = 0
+    correct_val = 0
+    total_val = 0
+    
+    with torch.no_grad():
+        for images, labels in tqdm(val_loader, desc=f'Epoch {epoch+1}/{num_epochs} - Validating'):
             images = images.to(device)
-            labels = labels.to(device)
+            labels = labels.float().to(device).unsqueeze(1)
 
-            with torch.no_grad():
+            with torch.autocast(device_type='cuda', dtype=torch.float16):
                 outputs = model(images)
                 loss = criterion(outputs, labels)
-
-            val_loss += loss.item() * images.size(0)
-            _, pred = torch.max(outputs, 1)
-            correct = (pred == labels).sum().item()
-            val_acc += correct
-            y_pred += pred.cpu().numpy().tolist()
-            y_true += labels.cpu().numpy().tolist()
-            total_samples += len(labels)
-
-        val_loss = val_loss / total_samples
-        val_acc = val_acc / total_samples
-
-        print(f'Val Loss: {val_loss:.6f} Val Accuracy: {val_acc:.6f}')
-        print(classification_report(y_true, y_pred))
             
+            total_val_loss += loss.item()
+            predicted = (torch.sigmoid(outputs) > 0.5).float()
+            correct_val += (predicted == labels).sum().item()
+            total_val += labels.size(0)
 
-    # Save the final model  
-    torch.save(model, f"{env}/models/{name}.pt")
-    
-    
+    val_loss = total_val_loss / len(val_loader)
+    val_acc = 100 * correct_val / total_val
 
-    
-        
+    # Print epoch results
+    print(f'[{epoch+1}/{num_epochs}] Train Loss: {train_loss:.5f}, Train Acc: {train_acc:.5f}')
+    print(f'[{epoch+1}/{num_epochs}] Val Loss:   {val_loss:.5f}, Val Acc: {val_acc:.5f}')
+
+# Save the model
+output_dir = f"{env}/models/ME621_Fav_2.pth"
+torch.save(model.state_dict(), output_dir)
