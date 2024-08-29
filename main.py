@@ -14,7 +14,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 bot : telegram.Bot
 
 class MyOpener(FancyURLopener):
-    version = 'ME621 1.0 (by Poof75 on e621)'
+    version = 'ME621 (github.com/Poofy1/ME621)'
 myopener = MyOpener()
 
 
