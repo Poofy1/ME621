@@ -1,0 +1,8 @@
+ Volume in drive D is LFS
+ Volume Serial Number is 42F8-3C56
+
+ Directory of D:\DATA\stable-diffusion-webui\venv\Scripts
+
+03/15/2024  12:39 AM           266,664 python.exe
+               1 File(s)        266,664 bytes
+               0 Dir(s)  1,463,712,542,720 bytes free

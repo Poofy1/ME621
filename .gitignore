@@ -15,6 +15,10 @@
 *.jpeg
 *.jfif
 *.webp
+*.pt 
+*.pth
+*.safetensors
+*.yaml
 
 *.html
 
