@@ -43,25 +43,28 @@ model = sd_models.model_data.get_sd_model()
 vae = model.first_stage_model
 vae_encoder = vae.encoder
 
-
 class FurryClassifier(nn.Module):
-    def __init__(self, vae_encoder):
+    def __init__(self, vae_encoder, img_size, dropout = 0):
         super().__init__()
         self.encoder = vae_encoder
         
         # Freeze the encoder parameters
         for param in self.encoder.parameters():
-            param.requires_grad = False
+            param.requires_grad = True
         
-        # The encoder's output shape is (batch_size, 8, 64, 64)
-        self.flattened_size = 8 * 64 * 64
+        
+        encoder_dim = img_size / 8
+        self.flattened_size = (int) (8 * encoder_dim * encoder_dim)
         
         self.fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(self.flattened_size, 128), 
+            nn.Linear(self.flattened_size, 256),  # First hidden layer
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(128, 1),
+            nn.Dropout(dropout),
+            nn.Linear(256, 128),  # Second hidden layer
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1),  # Output layer
         )
     
     def forward(self, x):
@@ -92,8 +95,7 @@ class FurryDataset(Dataset):
         image = Image.open(img_path).convert('RGB')
         label = self.data.iloc[index, 1]
 
-        if self.transform:
-            image = self.transform(image)
+        image = self.transform(image)
 
         return image, label
 
@@ -126,22 +128,40 @@ class BalancedSampler(Sampler):
         return len(self.positive_indices) * 2 // self.batch_size  # Number of batches per epoch
 
     
+    
+img_size = 256
+batch_size = 8
+
+
 # Data loading
-transform = transforms.Compose([
-    transforms.Resize((512, 512)),
+train_transform = transforms.Compose([
+    transforms.Resize((img_size, img_size)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(90),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
     transforms.ToTensor(),
     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 ])
 
-train_dataset = FurryDataset(csv_file=dataset_path, img_dir=image_path, transform=transform, split='train')
-val_dataset = FurryDataset(csv_file=dataset_path, img_dir=image_path, transform=transform, split='val')
+val_transform = transforms.Compose([
+    transforms.Resize((img_size, img_size)),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
 
-train_sampler = BalancedSampler(train_dataset, batch_size=8)
+train_dataset = FurryDataset(csv_file=dataset_path, img_dir=image_path, transform=train_transform, split='train')
+val_dataset = FurryDataset(csv_file=dataset_path, img_dir=image_path, transform=val_transform, split='val')
+
+print(f"Number of training images: {len(train_dataset)}")
+print(f"Number of validation images: {len(val_dataset)}")
+
+train_sampler = BalancedSampler(train_dataset, batch_size=batch_size)
 train_loader = DataLoader(train_dataset, batch_sampler=train_sampler)
-val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
+val_sampler = BalancedSampler(val_dataset, batch_size=batch_size)
+val_loader = DataLoader(val_dataset, batch_sampler=val_sampler, shuffle=False)
 
 # Initialize model and optimizer
-model = FurryClassifier(vae_encoder)
+model = FurryClassifier(vae_encoder, img_size)
 print(f"Total Parameters: {sum(p.numel() for p in model.parameters())}") 
 optimizer = torch.optim.Adam(model.fc.parameters(), lr=0.001)
 criterion = nn.BCEWithLogitsLoss().cuda()
@@ -209,6 +229,13 @@ for epoch in range(num_epochs):
     print(f'[{epoch+1}/{num_epochs}] Train Loss: {train_loss:.5f}, Train Acc: {train_acc:.5f}')
     print(f'[{epoch+1}/{num_epochs}] Val Loss:   {val_loss:.5f}, Val Acc: {val_acc:.5f}')
 
+
+# Create the directory path
+model_dir = f"{config['SAVE_DIR']}/models"
+os.makedirs(model_dir, exist_ok=True)
+
+# Define the full path for the .pth file
+output_path = f"{model_dir}/ME621.pth"
+
 # Save the model
-output_dir = f"{env}/models/ME621_Fav_2.pth"
-torch.save(model.state_dict(), output_dir)
+torch.save(model.state_dict(), output_path)

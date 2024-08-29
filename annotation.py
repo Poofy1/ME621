@@ -41,7 +41,8 @@ def get_max_page_id():
 
 # Function to fetch images from the API
 def fetch_images(page_id):
-    url = f'https://e621.net/posts.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=a{page_id}&tags=-animated&limit=200'
+    rand_score = random.randint(0, 1000)
+    url = f'https://e621.net/posts.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=a{page_id}&tags=-animated+score:>={rand_score}&limit=200'
     response = requests.get(url, headers=headers)
     return response.json()['posts']
 
@@ -98,6 +99,31 @@ def save_labeled_images(images_data):
 def index():
     return render_template('index.html')
 
+@app.route('/api/next-images')
+def get_next_images():
+    max_page_id = get_max_page_id()
+    random_page_id = random.randint(1000, max_page_id)
+    posts = fetch_images(random_page_id)
+    
+    processed_images = []
+    
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_to_post = {executor.submit(download_image, post): post for post in posts}
+        for future in as_completed(future_to_post):
+            result = future.result()
+            if result:
+                post, raw_content = result
+                processed = process_image(post, raw_content)
+                if processed:
+                    post, img_str = processed
+                    processed_images.append({
+                        'id': post['id'],
+                        'url': f"data:image/png;base64,{img_str}",
+                        'raw_content': img_str,
+                        'label': 0
+                    })
+    
+    return jsonify({'images': processed_images})
 
 @app.route('/api/images')
 def get_images():
