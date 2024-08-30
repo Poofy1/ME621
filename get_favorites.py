@@ -30,6 +30,17 @@ def fetch_favorites(page=1):
     response = requests.get(url, headers=headers)
     return response.json()['posts']
 
+def get_existing_favorites():
+    dataset_path = os.path.join(config['SAVE_DIR'], 'dataset.csv')
+    existing_favorites = set()
+    if os.path.exists(dataset_path):
+        with open(dataset_path, 'r') as f:
+            csv_reader = csv.reader(f)
+            next(csv_reader)  # Skip header
+            for row in csv_reader:
+                existing_favorites.add(int(row[0].split('.')[0]))
+    return existing_favorites
+
 # Function to download and process image
 def download_and_process_image(post):
     try:
@@ -76,7 +87,9 @@ def save_to_csv(data):
             split = 'train' if i < split_index else 'val'
             writer.writerow([item['filename'], item['label'], split])
 
-def main():
+
+def download_favorites():
+    existing_favorites = get_existing_favorites()
     all_favorites = []
     page = 1
     
@@ -87,20 +100,25 @@ def main():
         all_favorites.extend(favorites)
         page += 1
     
-    print(f"Found {len(all_favorites)} favorites")
+    new_favorites = [fav for fav in all_favorites if fav['id'] not in existing_favorites]
+    print(f"Found {len(new_favorites)} new favorites out of {len(all_favorites)} total favorites")
+    
+    if not new_favorites:
+        print("No new favorites to add.")
+        return
     
     processed_data = []
     with ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_post = {executor.submit(download_and_process_image, post): post for post in all_favorites}
+        future_to_post = {executor.submit(download_and_process_image, post): post for post in new_favorites}
         for future in as_completed(future_to_post):
             result = future.result()
             if result:
                 processed_data.append(result)
     
-    print(f"Successfully processed {len(processed_data)} non-animated images")
+    print(f"Successfully processed {len(processed_data)} new non-animated images")
     
     save_to_csv(processed_data)
-    print("Data saved to CSV")
+    print("New favorites added to CSV")
 
 if __name__ == "__main__":
-    main()
+    download_favorites()

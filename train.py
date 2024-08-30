@@ -44,13 +44,13 @@ vae = model.first_stage_model
 vae_encoder = vae.encoder
 
 class FurryClassifier(nn.Module):
-    def __init__(self, vae_encoder, img_size, dropout = 0):
+    def __init__(self, vae_encoder, img_size, dropout = 0.75):
         super().__init__()
         self.encoder = vae_encoder
         
         # Freeze the encoder parameters
         for param in self.encoder.parameters():
-            param.requires_grad = True
+            param.requires_grad = False
         
         
         encoder_dim = img_size / 8
@@ -59,17 +59,14 @@ class FurryClassifier(nn.Module):
         self.fc = nn.Sequential(
             nn.Flatten(),
             nn.Linear(self.flattened_size, 256),  # First hidden layer
+            nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(256, 128),  # Second hidden layer
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(128, 1),  # Output layer
+            nn.Linear(256, 1),  # Output layer
         )
     
     def forward(self, x):
         # Pass input through the encoder
-        x = x.half()
         encoded = self.encoder(x)
         pred = self.fc(encoded)
 
@@ -128,8 +125,10 @@ class BalancedSampler(Sampler):
         return len(self.positive_indices) * 2 // self.batch_size  # Number of batches per epoch
 
     
-    
-img_size = 256
+
+
+num_epochs = 10
+img_size = 512
 batch_size = 8
 
 
@@ -137,7 +136,6 @@ batch_size = 8
 train_transform = transforms.Compose([
     transforms.Resize((img_size, img_size)),
     transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(90),
     transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
     transforms.ToTensor(),
     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
@@ -163,13 +161,14 @@ val_loader = DataLoader(val_dataset, batch_sampler=val_sampler, shuffle=False)
 # Initialize model and optimizer
 model = FurryClassifier(vae_encoder, img_size)
 print(f"Total Parameters: {sum(p.numel() for p in model.parameters())}") 
-optimizer = torch.optim.Adam(model.fc.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(model.fc.parameters(), lr=0.0001)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 criterion = nn.BCEWithLogitsLoss().cuda()
 scaler = GradScaler()
 
 
 # Training loop
-num_epochs = 10
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model.to(device)
 
@@ -226,6 +225,7 @@ for epoch in range(num_epochs):
     val_acc = 100 * correct_val / total_val
 
     # Print epoch results
+    scheduler.step(val_loss)
     print(f'[{epoch+1}/{num_epochs}] Train Loss: {train_loss:.5f}, Train Acc: {train_acc:.5f}')
     print(f'[{epoch+1}/{num_epochs}] Val Loss:   {val_loss:.5f}, Val Acc: {val_acc:.5f}')
 

@@ -7,11 +7,11 @@ import base64
 from PIL import Image
 import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from flask import Flask, jsonify, request, render_template
 import webbrowser
 from flask import Flask, jsonify, request, render_template, Response
 import json
 from threading import Timer
+from get_favorites import *
 
 app = Flask(__name__)
 
@@ -32,6 +32,19 @@ headers = {
     'Authorization': f"Basic {key}"
 }
 
+def load_labeled_images():
+    dataset_path = os.path.join(config['SAVE_DIR'], 'dataset.csv')
+    labeled_images = set()
+    if os.path.exists(dataset_path):
+        with open(dataset_path, 'r') as f:
+            csv_reader = csv.reader(f)
+            next(csv_reader)  # Skip header
+            for row in csv_reader:
+                labeled_images.add(int(row[0].split('.')[0]))  # Add image ID to set
+    return labeled_images
+
+labeled_images = load_labeled_images()
+
 # Function to get the maximum page_id
 def get_max_page_id():
     url = f'https://e621.net/posts.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=b999999999&tags=-animated&limit=200'
@@ -44,7 +57,8 @@ def fetch_images(page_id):
     rand_score = random.randint(0, 1000)
     url = f'https://e621.net/posts.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=a{page_id}&tags=-animated+score:>={rand_score}&limit=200'
     response = requests.get(url, headers=headers)
-    return response.json()['posts']
+    posts = response.json()['posts']
+    return [post for post in posts if post['id'] not in labeled_images]
 
 # Function to download image
 def download_image(image_data):
@@ -54,6 +68,21 @@ def download_image(image_data):
     except Exception as e:
         print(f"Error downloading image: {e}")
         return None
+
+
+def get_favorites_count():
+    existing_favorites = get_existing_favorites()
+    new_favorites_count = 0
+    page = 1
+    while True:
+        favorites = fetch_favorites(page)
+        if not favorites:
+            break
+        for favorite in favorites:
+            if favorite['id'] not in existing_favorites:
+                new_favorites_count += 1
+        page += 1
+    return new_favorites_count
 
 # Function to process image
 def process_image(image_data, image_content):
@@ -129,34 +158,49 @@ def get_next_images():
 def get_images():
     def generate():
         max_page_id = get_max_page_id()
-        random_page_id = random.randint(1000, max_page_id)
-        posts = fetch_images(random_page_id)
-        
         processed_images = []
-        total_posts = len(posts)
+        total_fetched = 0
         
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_post = {executor.submit(download_image, post): post for post in posts}
-            for i, future in enumerate(as_completed(future_to_post)):
-                result = future.result()
-                if result:
-                    post, raw_content = result
-                    processed = process_image(post, raw_content)
-                    if processed:
-                        post, img_str = processed
-                        processed_images.append({
-                            'id': post['id'],
-                            'url': f"data:image/png;base64,{img_str}",
-                            'raw_content': img_str,
-                            'label': 0
-                        })
-                
-                progress = int((i + 1) / total_posts * 100)
-                yield f"data: {json.dumps({'progress': progress})}\n\n"
+        while len(processed_images) < 200 and total_fetched < 1000:  # Set a limit to prevent infinite loop
+            random_page_id = random.randint(1000, max_page_id)
+            posts = fetch_images(random_page_id)
+            total_fetched += len(posts)
+            
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_post = {executor.submit(download_image, post): post for post in posts}
+                for future in as_completed(future_to_post):
+                    result = future.result()
+                    if result:
+                        post, raw_content = result
+                        processed = process_image(post, raw_content)
+                        if processed:
+                            post, img_str = processed
+                            processed_images.append({
+                                'id': post['id'],
+                                'url': f"data:image/png;base64,{img_str}",
+                                'raw_content': img_str,
+                                'label': 0
+                            })
+                    
+                    progress = int(min(len(processed_images), 200) / 200 * 100)
+                    yield f"data: {json.dumps({'progress': progress})}\n\n"
+                    
+                    if len(processed_images) >= 200:
+                        break
         
-        yield f"data: {json.dumps({'images': processed_images})}\n\n"
+        yield f"data: {json.dumps({'images': processed_images[:200]})}\n\n"
     
     return Response(generate(), mimetype='text/event-stream')
+
+@app.route('/api/favorites-count')
+def favorites_count():
+    count = get_favorites_count()
+    return jsonify({'count': count})
+
+@app.route('/api/import-favorites', methods=['POST'])
+def import_favorites():
+    download_favorites()
+    return jsonify({'status': 'success'})
 
 @app.route('/api/label-count')
 def get_label_count():
@@ -170,8 +214,11 @@ def get_label_count():
 
 @app.route('/api/save', methods=['POST'])
 def save_labels():
-    labeled_images = request.json
-    save_labeled_images(labeled_images)
+    global labeled_images
+    labeled_images_data = request.json
+    save_labeled_images(labeled_images_data)
+    for image_data in labeled_images_data:
+        labeled_images.add(image_data['id'])
     return jsonify({'status': 'success'})
 
 def open_browser():
