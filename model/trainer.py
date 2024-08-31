@@ -14,13 +14,7 @@ os.environ['TORCH_USE_CUDA_DSA'] = '1'
 # Get the directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
-
-
-# Load configuration
-def load_config():
-    with open(f'{parent_dir}/config.json', 'r') as config_file:
-        return json.load(config_file)
-
+SAVE_DIR = os.path.join(parent_dir, 'data')
 
 
 class FurryClassifier(nn.Module):
@@ -114,12 +108,9 @@ def train_model():
     img_size = 512
     batch_size = 8
 
-
-    config = load_config()
-
     # Paths
-    dataset_path = f"{config['SAVE_DIR']}/dataset.csv"
-    image_path = f"{config['SAVE_DIR']}/images/"
+    dataset_path = f"{SAVE_DIR}/dataset.csv"
+    image_path = f"{SAVE_DIR}/images/"
 
 
     # Load model
@@ -236,7 +227,7 @@ def train_model():
 
 
     # Create the directory path
-    model_dir = f"{config['SAVE_DIR']}/models"
+    model_dir = f"{SAVE_DIR}/models"
     os.makedirs(model_dir, exist_ok=True)
 
     # Define the full path for the .pth file

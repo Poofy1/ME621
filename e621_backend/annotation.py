@@ -10,51 +10,37 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import webbrowser
 from flask import Blueprint, render_template, jsonify, request, Response
 import json
-from threading import Timer
-from e621_backend.get_favorites import *
+from config import global_config
+from e621_backend.get_favorites import get_existing_favorites, fetch_favorites, download_favorites
+
 
 # Get the directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
-
+SAVE_DIR = os.path.join(parent_dir, 'data')
 
 annotation_bp = Blueprint('annotation', __name__)
 
-# Load configuration
-def load_config():
-    with open(f'{parent_dir}/config.json', 'r') as config_file:
-        return json.load(config_file)
-
-config = load_config()
-
-# Set up API authentication
-key = f"{config['USERNAME']}:{config['API_KEY']}"
-key = base64.b64encode(key.encode()).decode()
-headers = {
-    'User-Agent': "User Annotation (https://github.com/Poofy1/ME621)",
-    'Authorization': f"Basic {key}"
-}
-
 def favorite_post(post_id):
-    url = f'https://e621.net/favorites.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}'
+    url = f'https://e621.net/favorites.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["API_KEY"]}'
     data = {'post_id': post_id}
 
-    response = requests.post(url, data=data, headers=headers)
+    response = requests.post(url, data=data, headers=global_config['headers'])
 
     if response.status_code not in [200, 201]:
         print(f"Failed to favorite post {post_id}. Status code: {response.status_code}")
         
 def unfavorite_post(post_id):
-    url = f'https://e621.net/favorites/{post_id}.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}'
+    url = f'https://e621.net/favorites/{post_id}.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["API_KEY"]}'
     
-    response = requests.delete(url, headers=headers)
+    response = requests.delete(url, headers=global_config['headers'])
 
     if response.status_code != 204:
         print(f"Failed to unfavorite post {post_id}. Status code: {response.status_code}")
         
         
 def load_labeled_images():
-    dataset_path = os.path.join(config['SAVE_DIR'], 'dataset.csv')
+    dataset_path = os.path.join(SAVE_DIR, 'dataset.csv')
     labeled_images = set()
     if os.path.exists(dataset_path):
         with open(dataset_path, 'r') as f:
@@ -68,23 +54,23 @@ labeled_images = load_labeled_images()
 
 # Function to get the maximum page_id
 def get_max_page_id():
-    url = f'https://e621.net/posts.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=b999999999&tags=-animated&limit=200'
-    response = requests.get(url, headers=headers)
+    url = f'https://e621.net/posts.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["API_KEY"]}&page=b999999999&tags=-animated&limit=200'
+    response = requests.get(url, headers=global_config['headers'])
     page = response.json()
     return page['posts'][0]['id']
 
 # Function to fetch images from the API
 def fetch_images(page_id):
     rand_score = random.randint(0, 1000)
-    url = f'https://e621.net/posts.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page=a{page_id}&tags=-animated+score:>={rand_score}&limit=200'
-    response = requests.get(url, headers=headers)
+    url = f'https://e621.net/posts.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["API_KEY"]}&page=a{page_id}&tags=-animated+score:>={rand_score}&limit=200'
+    response = requests.get(url, headers=global_config['headers'])
     posts = response.json()['posts']
     return [post for post in posts if post['id'] not in labeled_images]
 
 # Function to download image
 def download_image(image_data):
     try:
-        response = requests.get(image_data['sample']['url'], headers=headers)
+        response = requests.get(image_data['sample']['url'], headers=global_config['headers'])
         return image_data, response.content
     except Exception as e:
         print(f"Error downloading image: {e}")
@@ -120,9 +106,9 @@ def process_image(image_data, image_content):
 
 # Function to save labeled images
 def save_labeled_images(images_data):
-    images_dir = os.path.join(config['SAVE_DIR'], 'images')
+    images_dir = os.path.join(SAVE_DIR, 'images')
     os.makedirs(images_dir, exist_ok=True)
-    dataset_path = os.path.join(config['SAVE_DIR'], 'dataset.csv')
+    dataset_path = os.path.join(SAVE_DIR, 'dataset.csv')
 
     file_exists = os.path.isfile(dataset_path)
 
@@ -243,11 +229,11 @@ def import_favorites():
 
 @annotation_bp.route('/api/username')
 def get_username():
-    return jsonify({'username': config['USERNAME']})
+    return jsonify({'username': global_config["config"]['USERNAME']})
 
 @annotation_bp.route('/api/label-count')
 def get_label_count():
-    dataset_path = os.path.join(config['SAVE_DIR'], 'dataset.csv')
+    dataset_path = os.path.join(SAVE_DIR, 'dataset.csv')
     good_count = 0
     bad_count = 0
     if os.path.exists(dataset_path):

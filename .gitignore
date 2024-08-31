@@ -20,6 +20,7 @@
 *.safetensors
 *.yaml
 *.db
+*.csv
 
 
 # User-specific files (MonoDevelop/Xamarin Studio)
