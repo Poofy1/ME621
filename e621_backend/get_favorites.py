@@ -8,10 +8,13 @@ import random
 from PIL import Image
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Get the directory
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+
 # Load configuration
 def load_config():
-    env = os.path.dirname(os.path.abspath(__file__))
-    with open(f'{env}/config.json', 'r') as config_file:
+    with open(f'{parent_dir}/config.json', 'r') as config_file:
         return json.load(config_file)
 
 config = load_config()
@@ -28,7 +31,17 @@ headers = {
 def fetch_favorites(page=1):
     url = f'https://e621.net/favorites.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}&page={page}'
     response = requests.get(url, headers=headers)
-    return response.json()['posts']
+    all_posts = response.json()['posts']
+    
+    # Filter out animated images and posts without a valid sample URL
+    valid_posts = [
+        post for post in all_posts 
+        if 'animated' not in post['tags']['meta'] 
+        and post['sample']['url'] is not None 
+        and post['sample']['url'].lower() != 'none'
+    ]
+    
+    return valid_posts
 
 def get_existing_favorites():
     dataset_path = os.path.join(config['SAVE_DIR'], 'dataset.csv')
@@ -44,10 +57,6 @@ def get_existing_favorites():
 # Function to download and process image
 def download_and_process_image(post):
     try:
-        # Check if 'animated' is in meta tags
-        if 'animated' in post['tags']['meta']:
-            return None
-
         response = requests.get(post['sample']['url'], headers=headers)
         img = Image.open(io.BytesIO(response.content))
         img.thumbnail((250, 250))
@@ -101,7 +110,6 @@ def download_favorites():
         page += 1
     
     new_favorites = [fav for fav in all_favorites if fav['id'] not in existing_favorites]
-    print(f"Found {len(new_favorites)} new favorites out of {len(all_favorites)} total favorites")
     
     if not new_favorites:
         print("No new favorites to add.")
@@ -115,7 +123,7 @@ def download_favorites():
             if result:
                 processed_data.append(result)
     
-    print(f"Successfully processed {len(processed_data)} new non-animated images")
+    print(f"Successfully processed {len(processed_data)} images")
     
     save_to_csv(processed_data)
     print("New favorites added to CSV")

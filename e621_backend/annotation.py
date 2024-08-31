@@ -8,18 +8,21 @@ from PIL import Image
 import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import webbrowser
-from flask import Flask, jsonify, request, render_template, Response
+from flask import Blueprint, render_template, jsonify, request, Response
 import json
 from threading import Timer
-from get_favorites import *
+from e621_backend.get_favorites import *
 
-app = Flask(__name__)
+# Get the directory
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
 
-env = os.path.dirname(os.path.abspath(__file__))
+
+annotation_bp = Blueprint('annotation', __name__)
 
 # Load configuration
 def load_config():
-    with open(f'{env}/config.json', 'r') as config_file:
+    with open(f'{parent_dir}/config.json', 'r') as config_file:
         return json.load(config_file)
 
 config = load_config()
@@ -32,6 +35,24 @@ headers = {
     'Authorization': f"Basic {key}"
 }
 
+def favorite_post(post_id):
+    url = f'https://e621.net/favorites.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}'
+    data = {'post_id': post_id}
+
+    response = requests.post(url, data=data, headers=headers)
+
+    if response.status_code not in [200, 201]:
+        print(f"Failed to favorite post {post_id}. Status code: {response.status_code}")
+        
+def unfavorite_post(post_id):
+    url = f'https://e621.net/favorites/{post_id}.json?login={config["USERNAME"]}&api_key={config["API_KEY"]}'
+    
+    response = requests.delete(url, headers=headers)
+
+    if response.status_code != 204:
+        print(f"Failed to unfavorite post {post_id}. Status code: {response.status_code}")
+        
+        
 def load_labeled_images():
     dataset_path = os.path.join(config['SAVE_DIR'], 'dataset.csv')
     labeled_images = set()
@@ -124,11 +145,11 @@ def save_labeled_images(images_data):
             # Save the annotation
             writer.writerow([f"{image_id}.png", image_data['label'], "train" if random.random() < 0.8 else "val"])
 
-@app.route('/')
+@annotation_bp.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('annotation.html')
 
-@app.route('/api/next-images')
+@annotation_bp.route('/api/next-images')
 def get_next_images():
     max_page_id = get_max_page_id()
     random_page_id = random.randint(1000, max_page_id)
@@ -154,7 +175,7 @@ def get_next_images():
     
     return jsonify({'images': processed_images})
 
-@app.route('/api/images')
+@annotation_bp.route('/api/images')
 def get_images():
     def generate():
         max_page_id = get_max_page_id()
@@ -192,27 +213,55 @@ def get_images():
     
     return Response(generate(), mimetype='text/event-stream')
 
-@app.route('/api/favorites-count')
+@annotation_bp.route('/api/favorite', methods=['POST'])
+def add_favorite():
+    post_id = request.json.get('post_id')
+    if post_id:
+        favorite_post(post_id)
+        return jsonify({'status': 'success'})
+    else:
+        return jsonify({'status': 'error', 'message': 'No post_id provided'}), 400
+    
+@annotation_bp.route('/api/unfavorite', methods=['POST'])
+def remove_favorite():
+    post_id = request.json.get('post_id')
+    if post_id:
+        unfavorite_post(post_id)
+        return jsonify({'status': 'success'})
+    else:
+        return jsonify({'status': 'error', 'message': 'No post_id provided'}), 400
+    
+@annotation_bp.route('/api/favorites-count')
 def favorites_count():
     count = get_favorites_count()
     return jsonify({'count': count})
 
-@app.route('/api/import-favorites', methods=['POST'])
+@annotation_bp.route('/api/import-favorites', methods=['POST'])
 def import_favorites():
     download_favorites()
     return jsonify({'status': 'success'})
 
-@app.route('/api/label-count')
+@annotation_bp.route('/api/username')
+def get_username():
+    return jsonify({'username': config['USERNAME']})
+
+@annotation_bp.route('/api/label-count')
 def get_label_count():
     dataset_path = os.path.join(config['SAVE_DIR'], 'dataset.csv')
-    count = 0
+    good_count = 0
+    bad_count = 0
     if os.path.exists(dataset_path):
         with open(dataset_path, 'r') as f:
             csv_reader = csv.reader(f)
-            count = sum(1 for row in csv_reader if row[1] == '1')
-    return jsonify({'count': count})
+            next(csv_reader)  # Skip header
+            for row in csv_reader:
+                if row[1] == '1':
+                    good_count += 1
+                else:
+                    bad_count += 1
+    return jsonify({'goodCount': good_count, 'badCount': bad_count})
 
-@app.route('/api/save', methods=['POST'])
+@annotation_bp.route('/api/save', methods=['POST'])
 def save_labels():
     global labeled_images
     labeled_images_data = request.json
@@ -223,7 +272,3 @@ def save_labels():
 
 def open_browser():
     webbrowser.open_new('http://127.0.0.1:5000/')
-
-if __name__ == "__main__":
-    Timer(1, open_browser).start()
-    app.run(debug=True, use_reloader=False)

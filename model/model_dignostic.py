@@ -15,7 +15,7 @@ import torchvision.transforms as transforms
 from concurrent.futures import ThreadPoolExecutor
 from torch.utils.data import DataLoader
 import umap
-from train import *
+from ME621.training.train_model import *
 
 warnings.filterwarnings("ignore", message="Using a non-full backward hook")
 warnings.filterwarnings("ignore", message="nn.functional.upsample is deprecated")
