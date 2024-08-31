@@ -12,7 +12,7 @@ from flask import Blueprint, render_template, jsonify, request, Response
 import json
 from config import global_config
 from e621_backend.get_favorites import get_existing_favorites, fetch_favorites, download_favorites
-
+from concurrent.futures import ThreadPoolExecutor, as_completed, CancelledError
 
 # Get the directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -20,24 +20,6 @@ parent_dir = os.path.dirname(current_dir)
 SAVE_DIR = os.path.join(parent_dir, 'data')
 
 annotation_bp = Blueprint('annotation', __name__)
-
-def favorite_post(post_id):
-    url = f'https://e621.net/favorites.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["API_KEY"]}'
-    data = {'post_id': post_id}
-
-    response = requests.post(url, data=data, headers=global_config['headers'])
-
-    if response.status_code not in [200, 201]:
-        print(f"Failed to favorite post {post_id}. Status code: {response.status_code}")
-        
-def unfavorite_post(post_id):
-    url = f'https://e621.net/favorites/{post_id}.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["API_KEY"]}'
-    
-    response = requests.delete(url, headers=global_config['headers'])
-
-    if response.status_code != 204:
-        print(f"Failed to unfavorite post {post_id}. Status code: {response.status_code}")
-        
         
 def load_labeled_images():
     dataset_path = os.path.join(SAVE_DIR, 'dataset.csv')
@@ -161,6 +143,7 @@ def get_next_images():
     
     return jsonify({'images': processed_images})
 
+
 @annotation_bp.route('/api/images')
 def get_images():
     def generate():
@@ -168,13 +151,14 @@ def get_images():
         processed_images = []
         total_fetched = 0
         
-        while len(processed_images) < 200 and total_fetched < 1000:  # Set a limit to prevent infinite loop
+        while len(processed_images) < 200 and total_fetched < 1000:
             random_page_id = random.randint(1000, max_page_id)
             posts = fetch_images(random_page_id)
             total_fetched += len(posts)
             
             with ThreadPoolExecutor(max_workers=4) as executor:
                 future_to_post = {executor.submit(download_image, post): post for post in posts}
+                
                 for future in as_completed(future_to_post):
                     result = future.result()
                     if result:
@@ -188,34 +172,52 @@ def get_images():
                                 'raw_content': img_str,
                                 'label': 0
                             })
-                    
+                            
                     progress = int(min(len(processed_images), 200) / 200 * 100)
                     yield f"data: {json.dumps({'progress': progress})}\n\n"
                     
                     if len(processed_images) >= 200:
                         break
+            
+            if len(processed_images) >= 200:
+                break
         
         yield f"data: {json.dumps({'images': processed_images[:200]})}\n\n"
     
     return Response(generate(), mimetype='text/event-stream')
 
-@annotation_bp.route('/api/favorite', methods=['POST'])
-def add_favorite():
+@annotation_bp.route('/api/favorite', methods=['POST', 'DELETE'])
+def handle_favorite():
     post_id = request.json.get('post_id')
-    if post_id:
-        favorite_post(post_id)
-        return jsonify({'status': 'success'})
-    else:
+    if not post_id:
         return jsonify({'status': 'error', 'message': 'No post_id provided'}), 400
-    
-@annotation_bp.route('/api/unfavorite', methods=['POST'])
-def remove_favorite():
-    post_id = request.json.get('post_id')
-    if post_id:
-        unfavorite_post(post_id)
-        return jsonify({'status': 'success'})
-    else:
-        return jsonify({'status': 'error', 'message': 'No post_id provided'}), 400
+
+    try:
+        if request.method == 'POST':
+            favorite_post(post_id)
+            action = 'favorited'
+        else:  # DELETE
+            unfavorite_post(post_id)
+            action = 'unfavorited'
+
+        return jsonify({'status': 'success', 'message': f'Post {action} successfully'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+def favorite_post(post_id):
+    url = f'https://e621.net/favorites.json'
+    data = {'post_id': post_id}
+    params = {'login': global_config["config"]["USERNAME"], 'api_key': global_config["config"]["API_KEY"]}
+
+    response = requests.post(url, data=data, params=params, headers=global_config['headers'])
+    response.raise_for_status()
+
+def unfavorite_post(post_id):
+    url = f'https://e621.net/favorites/{post_id}.json'
+    params = {'login': global_config["config"]["USERNAME"], 'api_key': global_config["config"]["API_KEY"]}
+
+    response = requests.delete(url, params=params, headers=global_config['headers'])
+    response.raise_for_status()
     
 @annotation_bp.route('/api/favorites-count')
 def favorites_count():
@@ -246,6 +248,8 @@ def get_label_count():
                 else:
                     bad_count += 1
     return jsonify({'goodCount': good_count, 'badCount': bad_count})
+
+
 
 @annotation_bp.route('/api/save', methods=['POST'])
 def save_labels():
