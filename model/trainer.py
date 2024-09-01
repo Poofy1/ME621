@@ -101,9 +101,10 @@ class BalancedSampler(Sampler):
     
     
     
+
     
 def train_model():
-
+    print("Inside Trainer")
     num_epochs = 10
     img_size = 512
     batch_size = 8
@@ -174,7 +175,8 @@ def train_model():
         correct_train = 0
         total_train = 0
         
-        for images, labels in tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} - Training'):
+        print(f'Epoch {epoch+1}/{num_epochs} - Training')
+        for i, (images, labels) in enumerate(train_loader):
             images = images.to(device)
             labels = labels.float().to(device).unsqueeze(1)
             
@@ -192,6 +194,9 @@ def train_model():
             correct_train += (predicted == labels).sum().item()
             total_train += labels.size(0)
             
+            if (i + 1) % 10 == 0:  # Print every 10 batches
+                print(f'Batch {i+1}/{len(train_loader)}, Loss: {loss.item():.5f}')
+            
             
         
         train_loss = total_train_loss / len(train_loader)
@@ -203,8 +208,9 @@ def train_model():
         correct_val = 0
         total_val = 0
         
+        print(f'Epoch {epoch+1}/{num_epochs} - Validating')
         with torch.no_grad():
-            for images, labels in tqdm(val_loader, desc=f'Epoch {epoch+1}/{num_epochs} - Validating'):
+            for i, (images, labels) in enumerate(val_loader):
                 images = images.to(device)
                 labels = labels.float().to(device).unsqueeze(1)
 
@@ -216,6 +222,9 @@ def train_model():
                 predicted = (torch.sigmoid(outputs) > 0.5).float()
                 correct_val += (predicted == labels).sum().item()
                 total_val += labels.size(0)
+                
+                if (i + 1) % 10 == 0:  # Print every 10 batches
+                    print(f'Batch {i+1}/{len(val_loader)}, Loss: {loss.item():.5f}')
 
         val_loss = total_val_loss / len(val_loader)
         val_acc = 100 * correct_val / total_val
