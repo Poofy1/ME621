@@ -12,30 +12,15 @@ ME621 is a comprehensive tool suite designed to feed you e621.net content hand p
 2. Train a machine learning model on the user's preferred content
 3. Utilize a Telegram bot to showcase newly posted images that the model predicts the user will enjoy
 
-
 ## Requirements
-
-- **Hardware**:
-  - Recommended: NVIDIA GPU with at least 8GB VRAM
-
-- **Accounts**:
-  - e621 account with API key
-  - Telegram account with Bot API key
-
-- **Software**:
-  - Python 3.10.6
-
+- Recommended: NVIDIA GPU with at least 8GB VRAM
+- e621 account with API key
+- Telegram account with Bot API key
 
 ## Installation
 
-1. Install Python 3.10.6
-   https://www.python.org/downloads/release/python-3106/
+1. Install [Python 3.10.6](https://www.python.org/downloads/release/python-3106/)
 
-2. Clone the repository:
-   git clone https://github.com/Poofy1/ME621.git
+2. Clone the repository: `git clone https://github.com/Poofy1/ME621.git`
 
-3. Navigate to the project directory:
-   cd ME621
-
-4. Install the required dependencies:
-   pip install -r requirements.txt
+3. Install the required dependencies: `pip install -r requirements.txt`
