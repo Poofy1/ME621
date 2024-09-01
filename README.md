@@ -1,16 +1,14 @@
 # ME621
 
-## 🚧 Work in Progress 🚧
+Comprehensive program designed to feed you hand picked e621.net content automatically.
 
-ME621 is a project currently under heavy development. The overall structure and functionality may change drastically as development progresses.
+## Features:
 
-## Project Description
-
-ME621 is a comprehensive tool suite designed to feed you e621.net content hand picked by Machine Leanring. The project aims to provide the following functionality:
-
-1. Create a personalized e621.net dataset based on user preferences
-2. Train a machine learning model on the user's preferred content
-3. Utilize a Telegram bot to showcase newly posted images that the model predicts the user will enjoy
+1. Label e621 images directly on the webui interface
+2. Easily download user's favorited images on their e621 account
+     - With the ability to remotely add/remove images on their e621 account
+4. Automatically trains ML models and assists in the labeling process
+5. Deploy a Telegram bot to send newly posted images that the model predicts the user will enjoy
 
 ## Requirements
 - Recommended: NVIDIA GPU with at least 8GB VRAM
