@@ -17,7 +17,7 @@ SAVE_DIR = os.path.join(parent_dir, 'data')
 
 # Function to fetch user's favorites
 def fetch_favorites(page=1):
-    url = f'https://e621.net/favorites.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["API_KEY"]}&page={page}'
+    url = f'https://e621.net/favorites.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["E621_API"]}&page={page}'
     response = requests.get(url, headers=global_config['headers'])
     all_posts = response.json()['posts']
     
@@ -69,20 +69,13 @@ def save_to_csv(data):
     dataset_path = os.path.join(SAVE_DIR, 'dataset.csv')
     file_exists = os.path.isfile(dataset_path)
     
-    # Randomly shuffle the data
-    random.shuffle(data)
-    
-    # Calculate the split index
-    split_index = int(len(data) * 0.8)  # 80% for training
-    
     with open(dataset_path, 'a', newline='') as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(['image_name', 'label', 'split'])
+            writer.writerow(['image_name', 'label'])
         
         for i, item in enumerate(data):
-            split = 'train' if i < split_index else 'val'
-            writer.writerow([item['filename'], item['label'], split])
+            writer.writerow([item['filename'], item['label']])
 
 
 def download_favorites():

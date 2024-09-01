@@ -32,3 +32,10 @@ torchdiffeq
 torchsde
 transformers==4.30.2
 pillow-avif-plugin==1.4.3
+
+
+
+
+
+
+python-telegram-bot

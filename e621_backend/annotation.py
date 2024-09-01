@@ -36,7 +36,7 @@ labeled_images = load_labeled_images()
 
 # Function to get the maximum page_id
 def get_max_page_id():
-    url = f'https://e621.net/posts.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["API_KEY"]}&page=b999999999&tags=-animated&limit=200'
+    url = f'https://e621.net/posts.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["E621_API"]}&page=b999999999&tags=-animated&limit=200'
     response = requests.get(url, headers=global_config['headers'])
     page = response.json()
     return page['posts'][0]['id']
@@ -44,7 +44,7 @@ def get_max_page_id():
 # Function to fetch images from the API
 def fetch_images(page_id):
     rand_score = random.randint(0, 1000)
-    url = f'https://e621.net/posts.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["API_KEY"]}&page=a{page_id}&tags=-animated+score:>={rand_score}&limit=200'
+    url = f'https://e621.net/posts.json?login={global_config["config"]["USERNAME"]}&api_key={global_config["config"]["E621_API"]}&page=a{page_id}&tags=-animated+score:>={rand_score}&limit=200'
     response = requests.get(url, headers=global_config['headers'])
     posts = response.json()['posts']
     return [post for post in posts if post['id'] not in labeled_images]
@@ -99,7 +99,7 @@ def save_labeled_images(images_data):
         
         # Write headers if the file is new
         if not file_exists:
-            writer.writerow(['image_name', 'label', 'split'])
+            writer.writerow(['image_name', 'label'])
 
         for image_data in images_data:
             image_id = image_data['id']
@@ -111,7 +111,7 @@ def save_labeled_images(images_data):
                 img_file.write(image_content)
             
             # Save the annotation
-            writer.writerow([f"{image_id}.png", image_data['label'], "train" if random.random() < 0.8 else "val"])
+            writer.writerow([f"{image_id}.png", image_data['label']])
 
 @annotation_bp.route('/')
 def index():
@@ -207,14 +207,14 @@ def handle_favorite():
 def favorite_post(post_id):
     url = f'https://e621.net/favorites.json'
     data = {'post_id': post_id}
-    params = {'login': global_config["config"]["USERNAME"], 'api_key': global_config["config"]["API_KEY"]}
+    params = {'login': global_config["config"]["USERNAME"], 'api_key': global_config["config"]["E621_API"]}
 
     response = requests.post(url, data=data, params=params, headers=global_config['headers'])
     response.raise_for_status()
 
 def unfavorite_post(post_id):
     url = f'https://e621.net/favorites/{post_id}.json'
-    params = {'login': global_config["config"]["USERNAME"], 'api_key': global_config["config"]["API_KEY"]}
+    params = {'login': global_config["config"]["USERNAME"], 'api_key': global_config["config"]["E621_API"]}
 
     response = requests.delete(url, params=params, headers=global_config['headers'])
     response.raise_for_status()
