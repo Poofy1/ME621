@@ -21,7 +21,7 @@
 *.yaml
 *.db
 *.csv
-
+*.txt
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs

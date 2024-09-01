@@ -205,6 +205,10 @@ def load_model():
     vae = model.first_stage_model
     vae_encoder = vae.encoder
     
+    if model is not None:
+        del model
+    torch.cuda.empty_cache()
+    
     return vae_encoder
     
 def train_model():

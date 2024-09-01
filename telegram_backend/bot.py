@@ -105,7 +105,7 @@ async def Evaluate(model, image, image_id, me621_threshold=0.8):
     predicted = torch.sigmoid(output).item()  # Convert to scalar
 
     if predicted >= me621_threshold:
-        print(f"Image {image_id} | {predicted * 100:.1f}% Confidence (PASSED)")
+        print(f"Image ID: {image_id} | {predicted * 100:.1f}% Confidence (PASSED)")
 
         image_bytes = BytesIO()
         image.save(image_bytes, format='PNG')
