@@ -1,41 +1,23 @@
 # ME621
 
-## 🚧 Work in Progress 🚧
+Comprehensive program designed to feed you hand picked e621.net content automatically.
 
-ME621 is a project currently under heavy development. The overall structure and functionality may change drastically as development progresses.
+## Features:
 
-## Project Description
-
-ME621 is a comprehensive tool suite designed to feed you e621.net content hand picked by Machine Leanring. The project aims to provide the following functionality:
-
-1. Create a personalized e621.net dataset based on user preferences
-2. Train a machine learning model on the user's preferred content
-3. Utilize a Telegram bot to showcase newly posted images that the model predicts the user will enjoy
-
+1. Label e621 images directly on the webui interface
+2. Easily download user's favorited images on their e621 account
+     - With the ability to remotely add/remove images on their e621 account
+4. Automatically trains ML models and assists in the labeling process
+5. Deploy a Telegram bot to send newly posted images that the model predicts the user will enjoy
 
 ## Requirements
-
-- **Hardware**:
-  - Recommended: NVIDIA GPU with at least 8GB VRAM
-
-- **Accounts**:
-  - e621 account with API key
-  - Telegram account with Bot API key
-
-- **Software**:
-  - Python 3.10.6
-
+- Recommended: NVIDIA GPU with at least 8GB VRAM
+- e621 account with API key
+- Telegram account with Bot API key
 
 ## Installation
 
-1. Install Python 3.10.6
-   https://www.python.org/downloads/release/python-3106/
-
-2. Clone the repository:
-   git clone https://github.com/Poofy1/ME621.git
-
-3. Navigate to the project directory:
-   cd ME621
-
-4. Install the required dependencies:
-   pip install -r requirements.txt
+1. Install [Python 3.10.6](https://www.python.org/downloads/release/python-3106/)
+2. Clone the repository: `git clone https://github.com/Poofy1/ME621.git`
+3. Install the required dependencies: `pip install -r requirements.txt`
+4. Run `webui.py`
