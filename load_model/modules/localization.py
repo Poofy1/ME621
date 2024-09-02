@@ -9,6 +9,8 @@ localizations = {}
 def list_localizations(dirname):
     localizations.clear()
 
+    os.makedirs(dirname, exist_ok=True)
+    
     for file in os.listdir(dirname):
         fn, ext = os.path.splitext(file)
         if ext.lower() != ".json":

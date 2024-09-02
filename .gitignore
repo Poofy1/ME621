@@ -26,6 +26,7 @@
 /telegram_backend/last_image_id.txt
 /load_model/repositories
 /load_model/tmp
+/load_model/cache
 /load_model/model.ckpt
 /load_model/models/**/*
 

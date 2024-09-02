@@ -8,7 +8,6 @@ import queue
 import tqdm
 import requests
 current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
 
 # Register blueprints
 app = Flask(__name__)
@@ -63,8 +62,6 @@ def main_thread_tasks():
 
 
 
-
-
 def download_file(url, filepath):
     # Check if file already exists
     if os.path.exists(filepath):
@@ -75,36 +72,26 @@ def download_file(url, filepath):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
     # Send a GET request to the URL
+    print(f"Downloading {os.path.basename(filepath)}...")
     response = requests.get(url, stream=True)
     response.raise_for_status()  # Raise an exception for HTTP errors
     
-    # Get the total file size
-    total_size = int(response.headers.get('content-length', 0))
-
     # Open the file and write the content
-    with open(filepath, 'wb') as file, tqdm(
-        desc=os.path.basename(filepath),
-        total=total_size,
-        unit='iB',
-        unit_scale=True,
-        unit_divisor=1024,
-    ) as progress_bar:
-        for data in response.iter_content(chunk_size=1024):
-            size = file.write(data)
-            progress_bar.update(size)
+    with open(filepath, 'wb') as file:
+        for chunk in response.iter_content(chunk_size=8192):
+            file.write(chunk)
     
     print(f"File downloaded successfully: {filepath}")
 
+    
+    
 def launch_me621():
-    # Ensure parent_dir is defined
-    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
     # Download model if it does not exist
-    model_path = f"{parent_dir}/load_model/models/Stable-diffusion/yiffymix_v44.safetensors"
+    model_path = os.path.join(current_dir, "load_model", "models", "Stable-diffusion", "yiffymix_v44.safetensors")
     model_url = "https://civitai.com/api/download/models/558148?type=Model&format=SafeTensor&size=full&fp=fp16"
     download_file(model_url, model_path)
     
-    config_path = f"{parent_dir}/load_model/models/Stable-diffusion/yiffymix_v44.yaml"
+    config_path = os.path.join(current_dir, "load_model", "models", "Stable-diffusion", "yiffymix_v44.yaml")
     config_url = "https://civitai.com/api/download/models/558148?type=Config&format=Other"
     download_file(config_url, config_path)
 
