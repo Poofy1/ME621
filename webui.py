@@ -91,7 +91,7 @@ def download_file(url, filepath):
     
     print(f"File downloaded successfully: {filepath}")
 
-if __name__ == "__main__":
+def launch_me621():
     # Ensure parent_dir is defined
     parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

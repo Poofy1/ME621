@@ -45,8 +45,8 @@ def main():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(current_dir)
     sys.path.append(parent_dir)
-    import webui
-    
+    from webui import launch_me621
+    launch_me621()
     #start()
 
 
