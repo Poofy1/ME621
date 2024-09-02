@@ -5,6 +5,9 @@ import webbrowser, os, json
 from config import global_config, initialize_global_config, save_config, load_config
 import threading
 import queue
+import requests
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
 
 # Register blueprints
 app = Flask(__name__)
@@ -56,7 +59,38 @@ def main_thread_tasks():
             training_status["status"] = "completed"
         task_queue.task_done()
 
+
+
+
+
+def download_file(url, filepath):
+    # Check if file already exists
+    if os.path.exists(filepath):
+        print(f"File already exists: {filepath}")
+        return
+
+    # Send a GET request to the URL
+    response = requests.get(url, stream=True)
+    response.raise_for_status()  # Raise an exception for HTTP errors
+    
+    # Open the file and write the content
+    with open(filepath, 'wb') as file:
+        for chunk in response.iter_content(chunk_size=8192):
+            file.write(chunk)
+    
+    print(f"File downloaded successfully: {filepath}")
+
 if __name__ == "__main__":
+    # Download model if it does not exist
+    model_path = f"{parent_dir}/load_model/models/Stable-diffusion/yiffymix_v44.safetensors"
+    model_url = "https://civitai.com/api/download/models/558148?type=Model&format=SafeTensor&size=full&fp=fp16"
+    download_file(model_url, model_path)
+    
+    config_path = f"{parent_dir}/load_model/models/Stable-diffusion/yiffymix_v44.yaml"
+    config_url = "https://civitai.com/api/download/models/558148?type=Config&format=Other"
+    download_file(config_url, config_path)
+
+
     # Initialize global configuration when the app starts
     load_config()
     
