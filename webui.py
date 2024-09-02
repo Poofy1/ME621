@@ -64,11 +64,15 @@ def main_thread_tasks():
 
 
 
+
 def download_file(url, filepath):
     # Check if file already exists
     if os.path.exists(filepath):
         print(f"File already exists: {filepath}")
         return
+
+    # Create the directory if it doesn't exist
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
     # Send a GET request to the URL
     response = requests.get(url, stream=True)
