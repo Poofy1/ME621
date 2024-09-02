@@ -1,6 +1,8 @@
 # ME621
 
-Comprehensive program designed to feed you hand picked e621.net content automatically.
+ML-powered Telegram bot for personalized e621.net image delivery.
+
+ME621 is a comprehensive program designed to feed you hand picked e621.net content automatically. Using machine learning, it learns your tastes and delivers a personalized feed of images directly to your Telegram.
 
 ## Features:
 
@@ -12,7 +14,7 @@ Comprehensive program designed to feed you hand picked e621.net content automati
 
 ## Requirements
 - Recommended: NVIDIA GPU with at least 8GB VRAM
-- e621 account with API key
+- e621.net account with API key
 - Telegram account with Bot API key
 
 ## Installation
