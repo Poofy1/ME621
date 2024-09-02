@@ -342,7 +342,7 @@ def train_model():
         # Print epoch results
         scheduler.step(val_loss)
         print(f'\n[Epoch {epoch}] Train Loss: {train_loss:.5f} | Train Acc: {train_acc:.5f}')
-        print(  f'[Epoch {epoch}] Val Loss:   {val_loss:.5f  } | Val Acc: {val_acc:.5f}')
+        print(f'[Epoch {epoch}] Val Loss: {val_loss:.5f} | Val Acc: {val_acc:.5f}')
 
         # Check if validation loss improved
         if val_loss < best_val_loss:
