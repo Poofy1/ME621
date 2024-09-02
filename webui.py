@@ -5,6 +5,7 @@ import webbrowser, os, json
 from config import global_config, initialize_global_config, save_config, load_config
 import threading
 import queue
+import tqdm
 import requests
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -73,14 +74,27 @@ def download_file(url, filepath):
     response = requests.get(url, stream=True)
     response.raise_for_status()  # Raise an exception for HTTP errors
     
+    # Get the total file size
+    total_size = int(response.headers.get('content-length', 0))
+
     # Open the file and write the content
-    with open(filepath, 'wb') as file:
-        for chunk in response.iter_content(chunk_size=8192):
-            file.write(chunk)
+    with open(filepath, 'wb') as file, tqdm(
+        desc=os.path.basename(filepath),
+        total=total_size,
+        unit='iB',
+        unit_scale=True,
+        unit_divisor=1024,
+    ) as progress_bar:
+        for data in response.iter_content(chunk_size=1024):
+            size = file.write(data)
+            progress_bar.update(size)
     
     print(f"File downloaded successfully: {filepath}")
 
 if __name__ == "__main__":
+    # Ensure parent_dir is defined
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     # Download model if it does not exist
     model_path = f"{parent_dir}/load_model/models/Stable-diffusion/yiffymix_v44.safetensors"
     model_url = "https://civitai.com/api/download/models/558148?type=Model&format=SafeTensor&size=full&fp=fp16"
