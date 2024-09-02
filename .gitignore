@@ -23,6 +23,13 @@
 *.csv
 *.txt
 
+/load_model/repositories
+/load_model/venv
+/load_model/tmp
+/load_model/model.ckpt
+/load_model/models/**/*
+
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
