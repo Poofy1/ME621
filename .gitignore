@@ -21,8 +21,10 @@
 *.yaml
 *.db
 *.csv
+*.db
 
 /venv
+/tmp
 /telegram_backend/last_image_id.txt
 /load_model/repositories
 /load_model/tmp
