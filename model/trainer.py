@@ -1,11 +1,11 @@
 import torch
+import time
 import os, sys, csv
-from torchvision.utils import save_image
 import pandas as pd
 from tqdm import tqdm
 import torch.nn as nn
 import numpy as np
-from sklearn.model_selection import train_test_split
+from flask import Blueprint, render_template, jsonify, request
 from torch.cuda.amp import GradScaler
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import Sampler
@@ -107,7 +107,7 @@ class BalancedSampler(Sampler):
 
 
 
-def evaluate_and_save_worst_images(model, dataset, output_dir, device):
+def evaluate_and_save_worst_images(model, dataset, output_dir, device, print=print):
     model.eval()
     dataloader = DataLoader(dataset, batch_size=8, shuffle=False)
     
@@ -210,9 +210,10 @@ def load_model():
     torch.cuda.empty_cache()
     
     return vae_encoder
-    
-def train_model():
-    print("Starting Training")
+
+
+
+def train_model(print=print):
     img_size = 512
     batch_size = 8
 
@@ -280,12 +281,14 @@ def train_model():
     epoch = 0
     while True:
         epoch += 1
+        epoch_start_time = time.time()
+        
         model.train()
         total_train_loss = 0
         correct_train = 0
         total_train = 0
         
-        print(f'Epoch {epoch} - Training')
+        print(f'\n[Epoch {epoch}] - Training...')
         for i, (images, labels, image_ids) in enumerate(train_loader):
             images = images.to(device)
             labels = labels.float().to(device).unsqueeze(1)
@@ -303,11 +306,7 @@ def train_model():
             predicted = (torch.sigmoid(outputs) > 0.5).float()
             correct_train += (predicted == labels).sum().item()
             total_train += labels.size(0)
-            
-            if (i + 1) % 10 == 0:  # Print every 10 batches
-                print(f'Batch {i+1}/{len(train_loader)}, Loss: {loss.item():.5f}')
-            
-            
+
         
         train_loss = total_train_loss / len(train_loader)
         train_acc = 100 * correct_train / total_train
@@ -318,7 +317,6 @@ def train_model():
         correct_val = 0
         total_val = 0
         
-        print(f'Epoch {epoch} - Validating')
         with torch.no_grad():
             for i, (images, labels, image_ids) in enumerate(val_loader):
                 images = images.to(device)
@@ -333,38 +331,38 @@ def train_model():
                 correct_val += (predicted == labels).sum().item()
                 total_val += labels.size(0)
                 
-                if (i + 1) % 10 == 0:  # Print every 10 batches
-                    print(f'Batch {i+1}/{len(val_loader)}, Loss: {loss.item():.5f}')
-
         val_loss = total_val_loss / len(val_loader)
         val_acc = 100 * correct_val / total_val
 
+        epoch_end_time = time.time()
+        epoch_duration = epoch_end_time - epoch_start_time
+        
         # Print epoch results
         scheduler.step(val_loss)
-        print(f'\n[Epoch {epoch}] Train Loss: {train_loss:.5f} | Train Acc: {train_acc:.5f}')
-        print(f'[Epoch {epoch}] Val Loss: {val_loss:.5f} | Val Acc: {val_acc:.5f}')
-
+        print(f'      |  Loss  |  Accuracy')
+        print(f'Train | {train_loss:.4f} | {train_acc:.4f}')
+        print(f'Val   | {val_loss:.4f} | {val_acc:.4f}')
+        print(f'Completed in: {epoch_duration:.2f} seconds')
+        
         # Check if validation loss improved
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             counter = 0
             epochs_without_improvement = 0
-            print(f"Validation loss improved. Saving model to {output_path}")
             torch.save(model.state_dict(), output_path)
         else:
             counter += 1
             epochs_without_improvement += 1
 
-        # Check for early stopping
+        print(f"Epochs without improvement: {epochs_without_improvement} / {patience}")
+        
+        
+        # Check for early stopping break
         if counter >= patience:
-            print(f"Early stopping triggered. No improvement for {patience} epochs.")
+            print(f"\nTRAINING COMPLETED")
             break
+        
 
-        print(f"Epochs without improvement: {epochs_without_improvement}")
-
-    print("Training completed")
-    
-    
     # Load the best performing model
     best_model = FurryClassifier(vae_encoder, img_size)
     best_model.load_state_dict(torch.load(output_path))
@@ -374,4 +372,4 @@ def train_model():
     full_dataset = torch.utils.data.ConcatDataset([train_dataset, val_dataset])
 
     # Evaluate and save worst performing images
-    evaluate_and_save_worst_images(best_model, full_dataset, SAVE_DIR, device)
+    evaluate_and_save_worst_images(best_model, full_dataset, SAVE_DIR, device, print)

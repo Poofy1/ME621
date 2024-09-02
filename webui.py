@@ -1,27 +1,33 @@
-from flask import Flask, render_template, request, jsonify
+import logging
+from flask import Flask, render_template, request, jsonify, Response
 from e621_backend.annotation import annotation_bp
-from model.routes import training_bp
-import webbrowser, os, json
-from config import global_config, initialize_global_config, save_config, load_config
+import webbrowser, os
+from config import global_config, save_config, load_config
 import threading
 import queue
-import tqdm
+import time
 import requests
+import io
+import sys
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
-# Register blueprints
+
+class SuppressedLogFilter(logging.Filter):
+    def filter(self, record):
+        return not (
+            ('GET /console_output' in record.getMessage()) or
+            ('GET /training_status' in record.getMessage())
+        )
+        
+        
 app = Flask(__name__)
 app.register_blueprint(annotation_bp, url_prefix='/annotation')
-app.register_blueprint(training_bp, url_prefix='/training')
+logging.getLogger('werkzeug').addFilter(SuppressedLogFilter())
 
-
-
-# Queue for communication between threads
 task_queue = queue.Queue()
-
-# Global variable to store training status
 training_status = {"status": "idle"}
-
+console_output = io.StringIO()
 
 @app.route('/')
 def index():
@@ -36,31 +42,46 @@ def save_config_route():
     save_config(username, api_key, chat_id, bot_api)
     return jsonify({"success": True})
 
-@app.route('/start_training', methods=['POST'])
-def start_training():
-    task_queue.put('train')
-    return jsonify({"status": "Training started"})
 
+
+        
+@app.route('/console_output')
+def get_console_output():
+    return Response(console_output.getvalue(), mimetype='text/plain')
+
+def custom_print(*args, sep=' ', end='\n', file=sys.stdout, flush=False):
+    print(*args, sep=sep, end=end, file=file, flush=flush)
+    print(*args, sep=sep, end=end, file=console_output, flush=flush)
+    
+    
 @app.route('/training_status', methods=['GET'])
 def get_training_status():
     return jsonify(training_status)
 
-def run_flask():
-    app.run(debug=False, use_reloader=False)
+@app.route('/start_training', methods=['POST'])
+def start_training():
+    if training_status["status"] == "idle":
+        custom_print("Starting Training...")
+        task_queue.put('train')
+        training_status["status"] = "running"
+        return jsonify({"status": "Training started"})
+    else:
+        return jsonify({"status": training_status["status"]})
+
+def run_training():
+    global training_status
+    from model.trainer import train_model
+    train_model(custom_print)
+    training_status["status"] = "completed"
 
 def main_thread_tasks():
     global training_status
     while True:
-        task = task_queue.get()  # This will block until an item is available
-        if task == 'train': # I know this is shit but I could not find another way
-            from model.trainer import train_model
-            training_status["status"] = "running"
-            train_model()
-            training_status["status"] = "completed"
+        task = task_queue.get()
+        if task == 'train':
+            run_training()
+        training_status["status"] = "idle"
         task_queue.task_done()
-
-
-
 
 def download_file(url, filepath):
     # Check if file already exists
@@ -84,7 +105,11 @@ def download_file(url, filepath):
     print(f"File downloaded successfully: {filepath}")
 
     
-    
+
+def run_flask():
+    app.run(debug=False, use_reloader=False)
+
+
 def launch_me621():
     # Download model if it does not exist
     model_path = os.path.join(current_dir, "load_model", "models", "Stable-diffusion", "yiffymix_v44.safetensors")
@@ -108,3 +133,8 @@ def launch_me621():
 
     # Run main thread tasks
     main_thread_tasks()
+
+
+
+if __name__ == "__main__":
+    launch_me621()
