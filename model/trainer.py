@@ -38,7 +38,11 @@ class FurryClassifier(nn.Module):
             nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(256, 1),  # Output layer
+            nn.Linear(256, 128),  # New second hidden layer
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1),  # Output layer
         )
     
     def forward(self, x):
@@ -108,6 +112,7 @@ class BalancedSampler(Sampler):
 
 
 def evaluate_and_save_worst_images(model, dataset, output_dir, device, print=print):
+    print("\nEvaluating Dataset")
     model.eval()
     dataloader = DataLoader(dataset, batch_size=8, shuffle=False)
     
@@ -153,7 +158,7 @@ def evaluate_and_save_worst_images(model, dataset, output_dir, device, print=pri
         for image_id, label, loss in worst_data:
             csvwriter.writerow([f"{image_id}.png", int(label), f"{loss:.4f}"])
 
-    print(f"Saved {num_worst} worst performing instances (5% of total) to {csv_path}")
+    print(f"\nFound worst performing instances (5% of total) to {csv_path}")
     
 
 def create_val_split(csv_path, val_ratio=0.2):
@@ -214,8 +219,8 @@ def load_model():
 
 
 def train_model(print=print):
-    img_size = 512
-    batch_size = 8
+    img_size = 256
+    batch_size = 32
 
     # Paths
     dataset_path = f"{SAVE_DIR}/dataset.csv"
@@ -267,6 +272,7 @@ def train_model(print=print):
     model.to(device)
 
     best_val_loss = float('inf')
+    best_val_acc = 0
     patience = 5
     counter = 0
     epochs_without_improvement = 0
@@ -347,6 +353,7 @@ def train_model(print=print):
         # Check if validation loss improved
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_val_acc = val_acc
             counter = 0
             epochs_without_improvement = 0
             torch.save(model.state_dict(), output_path)
@@ -360,6 +367,7 @@ def train_model(print=print):
         # Check for early stopping break
         if counter >= patience:
             print(f"\nTRAINING COMPLETED")
+            print(f"Accuracy Achieived: {best_val_acc:.2f}%")
             break
         
 
