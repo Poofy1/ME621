@@ -1,11 +1,11 @@
 import torch
 import time
 import os, sys, csv
+from datetime import datetime
 import pandas as pd
 from tqdm import tqdm
 import torch.nn as nn
 import numpy as np
-from flask import Blueprint, render_template, jsonify, request
 from torch.cuda.amp import GradScaler
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data import Sampler
@@ -151,7 +151,7 @@ def evaluate_and_save_worst_images(model, dataset, output_dir, device, print=pri
     worst_data = [(all_image_ids[idx], all_labels[idx], all_losses[idx]) for idx in worst_indices]
 
     # Write to CSV
-    csv_path = os.path.join(output_dir, 'worst_performing.csv')
+    csv_path = os.path.join(output_dir, 'models', 'worst_performing.csv')
     with open(csv_path, 'w', newline='') as csvfile:
         csvwriter = csv.writer(csvfile)
         csvwriter.writerow(['image_name', 'label', 'loss'])  # Write header
@@ -357,6 +357,18 @@ def train_model(print=print):
             counter = 0
             epochs_without_improvement = 0
             torch.save(model.state_dict(), output_path)
+            
+            # Save stats to CSV
+            stats_path = f"{model_dir}/model_stats.csv"
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            total_images = len(train_dataset) + len(val_dataset)
+            
+            stats = [current_time, f"{best_val_acc:.2f}", str(total_images)]
+            
+            with open(stats_path, 'w', newline='') as file:
+                writer = csv.writer(file)
+                writer.writerow(["datetime", "accuracy", "images_trained"])
+                writer.writerow(stats)
         else:
             counter += 1
             epochs_without_improvement += 1

@@ -5,9 +5,10 @@ import webbrowser, os
 from config import global_config, save_config, load_config
 import threading
 import queue
-import time
+from datetime import datetime
 import requests
 import io
+import csv
 import sys
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,9 +30,25 @@ task_queue = queue.Queue()
 training_status = {"status": "idle"}
 console_output = io.StringIO()
 
+
+def get_model_stats():
+    csv_path = f'{current_dir}/data/models/model_stats.csv'
+    if os.path.exists(csv_path):
+        with open(csv_path, 'r') as f:
+            reader = csv.reader(f)
+            next(reader)  # Skip header
+            row = next(reader)
+            return {
+                'datetime': datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S'),
+                'accuracy': float(row[1]),
+                'images_trained': int(row[2])
+            }
+    return None
+
 @app.route('/')
 def index():
-    return render_template('index.html', config_exists=global_config['config'] is not None)
+    model_stats = get_model_stats()
+    return render_template('index.html', config_exists=global_config['config'] is not None, model_stats=model_stats)
 
 @app.route('/save_config', methods=['POST'])
 def save_config_route():
@@ -68,18 +85,14 @@ def start_training():
     else:
         return jsonify({"status": training_status["status"]})
 
-def run_training():
-    global training_status
-    from model.trainer import train_model
-    train_model(custom_print)
-    training_status["status"] = "completed"
 
 def main_thread_tasks():
     global training_status
+    from model.trainer import train_model
     while True:
         task = task_queue.get()
         if task == 'train':
-            run_training()
+            train_model(custom_print)
         training_status["status"] = "idle"
         task_queue.task_done()
 
