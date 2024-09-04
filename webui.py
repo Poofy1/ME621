@@ -85,14 +85,22 @@ def start_training():
     else:
         return jsonify({"status": training_status["status"]})
 
-
+@app.route('/start_bot', methods=['POST'])
+def start_bot():
+    custom_print("Starting Bot...")
+    task_queue.put('bot')
+    return jsonify({"status": "Bot started"})
+    
 def main_thread_tasks():
     global training_status
     from model.trainer import train_model
+    from telegram_backend.bot import launch_bot
     while True:
         task = task_queue.get()
         if task == 'train':
             train_model(custom_print)
+        elif task == 'bot':
+            launch_bot(custom_print)
         training_status["status"] = "idle"
         task_queue.task_done()
 

@@ -369,6 +369,11 @@ def train_model(print=print):
                 writer = csv.writer(file)
                 writer.writerow(["datetime", "accuracy", "images_trained"])
                 writer.writerow(stats)
+                
+            # Delete outdated worst performing instances
+            file_path = f"{model_dir}/worst_performing.csv"
+            if os.path.exists(file_path):
+                os.remove(file_path)
         else:
             counter += 1
             epochs_without_improvement += 1
