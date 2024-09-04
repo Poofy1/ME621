@@ -4,6 +4,8 @@ ML-powered Telegram bot for personalized e621.net image delivery.
 
 ME621 is a comprehensive program designed to feed you hand picked e621.net content automatically. Using machine learning, it learns your tastes and delivers a personalized feed of images directly to your Telegram.
 
+This is a WIP project, you will encounter unfinished features and issues.
+
 ## Features:
 
 1. Label e621 images directly on the webui interface
@@ -14,8 +16,10 @@ ME621 is a comprehensive program designed to feed you hand picked e621.net conte
 
 ## Requirements
 - Recommended: NVIDIA GPU with at least 8GB VRAM
-- e621.net account with API key
-- Telegram account with Bot API key
+- e621.net account
+- e621 API key
+- Telegram account
+- [Telegram bot API key](https://help.zoho.com/portal/en/kb/desk/support-channels/instant-messaging/telegram/articles/telegram-integration-with-zoho-desk#Telegram_Integration)
 
 ## Installation
 
