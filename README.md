@@ -4,7 +4,7 @@ ML-powered Telegram bot for personalized e621.net image delivery.
 
 ME621 is a comprehensive program designed to feed you hand picked e621.net content automatically. Using machine learning, it learns your tastes and delivers a personalized feed of images directly to your Telegram.
 
-This is a WIP project, you will encounter unfinished features and issues. Currently model accuracy is low but technique will be added to improve the accuracy.
+This is a WIP project, you will encounter unfinished features and issues. Currently model accuracy is low but techniques will be added to improve accuracy.
 
 ## Features:
 
