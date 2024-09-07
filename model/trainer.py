@@ -111,7 +111,7 @@ class BalancedSampler(Sampler):
 
 
 
-def evaluate_and_save_worst_images(model, dataset, output_dir, device, print=print):
+def evaluate_worst_images(model, dataset, output_dir, device, print=print):
     print("\nEvaluating Dataset")
     model.eval()
     dataloader = DataLoader(dataset, batch_size=8, shuffle=False)
@@ -119,6 +119,7 @@ def evaluate_and_save_worst_images(model, dataset, output_dir, device, print=pri
     all_losses = []
     all_image_ids = []
     all_labels = []
+    all_predictions = []
     criterion = nn.BCEWithLogitsLoss(reduction='none')
 
     with torch.no_grad():
@@ -130,6 +131,9 @@ def evaluate_and_save_worst_images(model, dataset, output_dir, device, print=pri
                 outputs = model(images)
                 losses = criterion(outputs, labels)
             
+            # Calculate predictions
+            predictions = torch.sigmoid(outputs) > 0.5
+            
             # Ensure losses is always a list or 1D tensor
             if isinstance(losses, float):
                 losses = [losses]
@@ -139,6 +143,7 @@ def evaluate_and_save_worst_images(model, dataset, output_dir, device, print=pri
             all_losses.extend(losses)
             all_image_ids.extend(image_ids)
             all_labels.extend(labels.cpu().numpy().flatten())
+            all_predictions.extend(predictions.cpu().numpy().flatten())
 
     # Calculate the number of images to save (5% of total)
     num_worst = int(len(all_losses) * 0.05)
@@ -148,15 +153,15 @@ def evaluate_and_save_worst_images(model, dataset, output_dir, device, print=pri
     worst_indices = sorted_indices[:num_worst]
 
     # Prepare data for CSV
-    worst_data = [(all_image_ids[idx], all_labels[idx], all_losses[idx]) for idx in worst_indices]
+    worst_data = [(all_image_ids[idx], all_labels[idx], all_predictions[idx], all_losses[idx]) for idx in worst_indices]
 
     # Write to CSV
     csv_path = os.path.join(output_dir, 'models', 'worst_performing.csv')
     with open(csv_path, 'w', newline='') as csvfile:
         csvwriter = csv.writer(csvfile)
-        csvwriter.writerow(['image_name', 'label', 'loss'])  # Write header
-        for image_id, label, loss in worst_data:
-            csvwriter.writerow([f"{image_id}.png", int(label), f"{loss:.4f}"])
+        csvwriter.writerow(['image_name', 'label', 'prediction', 'loss'])  # Write header
+        for image_id, label, prediction, loss in worst_data:
+            csvwriter.writerow([f"{image_id}.png", int(label), int(prediction), f"{loss:.4f}"])
 
     print(f"\nFound worst performing instances (5% of total) to {csv_path}")
     
@@ -397,4 +402,4 @@ def train_model(print=print):
     full_dataset = torch.utils.data.ConcatDataset([train_dataset, val_dataset])
 
     # Evaluate and save worst performing images
-    evaluate_and_save_worst_images(best_model, full_dataset, SAVE_DIR, device, print)
+    evaluate_worst_images(best_model, full_dataset, SAVE_DIR, device, print)
