@@ -10,9 +10,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import webbrowser
 from flask import Blueprint, render_template, jsonify, request, Response
 import json
-from config import global_config
 from e621_backend.get_favorites import get_existing_favorites, fetch_favorites, download_favorites
 from concurrent.futures import ThreadPoolExecutor, as_completed, CancelledError
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+
+from config import global_config
+
 
 # Get the directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -260,41 +265,5 @@ def save_labels():
         labeled_images.add(image_data['id'])
     return jsonify({'status': 'success'})
 
-
-def fetch_and_process_images():
-    max_page_id = get_max_page_id()
-    processed_images = []
-    total_fetched = 0
-    
-    while len(processed_images) < 16 and total_fetched < 1000:
-        random_page_id = random.randint(1000, max_page_id)
-        posts = fetch_images(random_page_id)
-        total_fetched += len(posts)
-        
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_post = {executor.submit(download_image, post): post for post in posts}
-            
-            for future in as_completed(future_to_post):
-                result = future.result()
-                if result:
-                    post, raw_content = result
-                    processed = process_image(post, raw_content)
-                    if processed:
-                        post, img_str = processed
-                        processed_images.append({
-                            'id': post['id'],
-                            'url': f"data:image/png;base64,{img_str}",
-                            'raw_content': img_str,
-                            'label': 0
-                        })
-                        
-                progress = int(min(len(processed_images), 16) / 16 * 100)
-                yield progress, None
-                
-                if len(processed_images) >= 16:
-                    break
-        
-        if len(processed_images) >= 16:
-            break
-    
-    return 100, processed_images[:16]
+def open_browser():
+    webbrowser.open_new('http://127.0.0.1:5000/')

@@ -16,6 +16,8 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r') as f:
             initialize_global_config(json.load(f))
+            return True
+    return False
 
 def save_config(username, api_key, chat_id, bot_api):
     config = {
